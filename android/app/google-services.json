@@ -1,0 +1,39 @@
+{
+  "project_info": {
+    "project_number": "71786760529",
+    "project_id": "agripy-b5422",
+    "storage_bucket": "agripy-b5422.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:71786760529:android:13cb9e3edd395f51952b70",
+        "android_client_info": {
+          "package_name": "com.example.agripy"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "71786760529-3qflf8m06m041gvosa57n3ql1arkdfsi.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDJKxUTYw3PaUcBB5Nv4JzyGwV7ZR0F-Ic"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "71786760529-3qflf8m06m041gvosa57n3ql1arkdfsi.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
