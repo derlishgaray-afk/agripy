@@ -172,6 +172,7 @@ class SuperAdminRepo {
     await userDocRef.set(payload, SetOptions(merge: true));
     await linkRef.set({
       'tenantId': tenantId,
+      'displayName': tenantUser.displayName,
       'createdAt': existingLinkSnapshot.exists
           ? existingLinkCreatedAt ?? Timestamp.now()
           : Timestamp.now(),
@@ -261,96 +262,46 @@ class SuperAdminRepo {
     }
 
     final inviteRef = _tenantInvites.doc(invite.id!);
-    await _firestore.runTransaction((transaction) async {
-      final inviteSnapshot = await transaction.get(inviteRef);
-      final inviteData = inviteSnapshot.data();
-      if (inviteData == null) {
-        throw StateError('La invitacion no existe.');
-      }
+    final linkRef = _firestore.collection('user_tenant').doc(uid);
+    final linkSnapshot = await linkRef.get();
+    final existingLinkData = linkSnapshot.data();
+    final existingTenantId = (existingLinkData?['tenantId'] as String?)?.trim();
+    if (existingTenantId != null &&
+        existingTenantId.isNotEmpty &&
+        existingTenantId != invite.tenantId) {
+      throw UserTenantConflictException(existingTenantId);
+    }
 
-      final currentInvite = TenantInviteModel.fromMap(
-        inviteData,
-        id: inviteSnapshot.id,
-      );
-      if (currentInvite.claimedAt != null) {
-        throw StateError('Esta invitacion ya fue utilizada.');
-      }
-      if (currentInvite.expiresAt != null &&
-          currentInvite.expiresAt!.isBefore(DateTime.now())) {
-        throw StateError('La invitacion esta vencida.');
-      }
+    final tenantUserRef = _tenants.doc(invite.tenantId).collection('users').doc(uid);
+    final now = Timestamp.now();
+    final batch = _firestore.batch();
 
-      final tenantRef = _tenants.doc(currentInvite.tenantId);
-      final tenantSnapshot = await transaction.get(tenantRef);
-      final tenantData = tenantSnapshot.data();
-      if (tenantData == null) {
-        throw StateError('Tenant de la invitacion no encontrado.');
-      }
-      final tenant = TenantModel.fromMap(tenantData, id: tenantSnapshot.id);
+    batch.set(tenantUserRef, {
+      'displayName': invite.displayName,
+      'role': tenantUserRoleToString(invite.role),
+      'status': accountStatusToString(invite.status),
+      'activeModules': invite.activeModules,
+      'onboardingInviteCode': invite.inviteCode,
+      'createdAt': now,
+      'createdBy': invite.createdBy,
+    }, SetOptions(merge: true));
 
-      final tenantModules = tenant.modules.toSet();
-      final invalidModules = currentInvite.activeModules
-          .where((module) => !tenantModules.contains(module))
-          .toList(growable: false);
-      if (invalidModules.isNotEmpty) {
-        throw StateError(
-          'La invitacion tiene modulos fuera del plan del tenant.',
-        );
-      }
-
-      final linkRef = _firestore.collection('user_tenant').doc(uid);
-      final linkSnapshot = await transaction.get(linkRef);
-      final existingLinkData = linkSnapshot.data();
-      final existingTenantId = (existingLinkData?['tenantId'] as String?)
-          ?.trim();
-      if (existingTenantId != null &&
-          existingTenantId.isNotEmpty &&
-          existingTenantId != currentInvite.tenantId) {
-        throw UserTenantConflictException(existingTenantId);
-      }
-
-      final tenantUserRef = _tenants
-          .doc(currentInvite.tenantId)
-          .collection('users')
-          .doc(uid);
-      final tenantUserSnapshot = await transaction.get(tenantUserRef);
-      final existingTenantUserData = tenantUserSnapshot.data();
-
-      final createdAt =
-          _parseDateTime(existingTenantUserData?['createdAt']) ??
-          DateTime.now();
-      final createdBy =
-          (existingTenantUserData?['createdBy'] as String?)
-                  ?.trim()
-                  .isNotEmpty ==
-              true
-          ? (existingTenantUserData?['createdBy'] as String).trim()
-          : currentInvite.createdBy;
-
-      transaction.set(tenantUserRef, {
-        'displayName': currentInvite.displayName,
-        'role': tenantUserRoleToString(currentInvite.role),
-        'status': accountStatusToString(currentInvite.status),
-        'activeModules': currentInvite.activeModules,
-        'onboardingInviteCode': currentInvite.inviteCode,
-        'createdAt': Timestamp.fromDate(createdAt),
-        'createdBy': createdBy,
+    if (!linkSnapshot.exists) {
+      batch.set(linkRef, {
+        'tenantId': invite.tenantId,
+        'displayName': invite.displayName,
+        'onboardingInviteCode': invite.inviteCode,
+        'createdAt': now,
       }, SetOptions(merge: true));
+    }
 
-      transaction.set(linkRef, {
-        'tenantId': currentInvite.tenantId,
-        'onboardingInviteCode': currentInvite.inviteCode,
-        'createdAt': linkSnapshot.exists
-            ? (existingLinkData?['createdAt'] ?? Timestamp.now())
-            : Timestamp.now(),
-      }, SetOptions(merge: true));
-
-      transaction.update(inviteRef, {
-        'claimedByUid': uid,
-        'claimedAt': Timestamp.now(),
-        'inviteState': inviteStatusToString(InviteStatus.claimed),
-      });
+    batch.update(inviteRef, {
+      'claimedByUid': uid,
+      'claimedAt': now,
+      'inviteState': inviteStatusToString(InviteStatus.claimed),
     });
+
+    await batch.commit();
   }
 
   Future<String> _generateUniqueInviteCode() async {

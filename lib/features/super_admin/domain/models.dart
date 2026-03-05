@@ -302,14 +302,23 @@ class UserTenantLink {
     required this.uid,
     required this.tenantId,
     required this.createdAt,
+    this.displayName = '',
   });
 
   final String uid;
   final String tenantId;
   final DateTime createdAt;
+  final String displayName;
 
   Map<String, dynamic> toMap() {
-    return {'tenantId': tenantId, 'createdAt': Timestamp.fromDate(createdAt)};
+    final map = <String, dynamic>{
+      'tenantId': tenantId,
+      'createdAt': Timestamp.fromDate(createdAt),
+    };
+    if (displayName.trim().isNotEmpty) {
+      map['displayName'] = displayName.trim();
+    }
+    return map;
   }
 
   factory UserTenantLink.fromMap(String uid, Map<String, dynamic> map) {
@@ -317,6 +326,7 @@ class UserTenantLink {
       uid: uid,
       tenantId: (map['tenantId'] as String? ?? '').trim(),
       createdAt: _parseDateTime(map['createdAt']),
+      displayName: (map['displayName'] as String? ?? '').trim(),
     );
   }
 }

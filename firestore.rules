@@ -18,7 +18,12 @@ service cloud.firestore {
     function isSuperAdmin() {
       return isSignedIn() &&
         exists(/databases/$(database)/documents/super_admins/$(uid())) &&
-        get(/databases/$(database)/documents/super_admins/$(uid())).data.status == 'active';
+        (
+          !('status' in get(/databases/$(database)/documents/super_admins/$(uid())).data) ||
+          get(/databases/$(database)/documents/super_admins/$(uid())).data.status == 'active' ||
+          get(/databases/$(database)/documents/super_admins/$(uid())).data.status == 'Active' ||
+          get(/databases/$(database)/documents/super_admins/$(uid())).data.status == 'ACTIVE'
+        );
     }
 
     function hasUserTenantLink() {
@@ -34,6 +39,10 @@ service cloud.firestore {
 
     function isTenantMember(tenantId) {
       return isSignedIn() && userTenantId() == tenantId;
+    }
+
+    function isSelfWorkspaceOwner(tenantId) {
+      return isSignedIn() && tenantId == uid();
     }
 
     function tenantExists(tenantId) {
@@ -165,22 +174,44 @@ service cloud.firestore {
         (isSignedIn() &&
           userId == uid() &&
           !exists(/databases/$(database)/documents/user_tenant/$(userId)) &&
+          request.resource.data.tenantId == uid() &&
+          request.resource.data.displayName is string &&
+          request.resource.data.createdAt is timestamp) ||
+        (isSignedIn() &&
+          userId == uid() &&
+          !exists(/databases/$(database)/documents/user_tenant/$(userId)) &&
           request.resource.data.tenantId is string &&
+          request.resource.data.displayName is string &&
           hasOnboardingInviteCodeInRequest() &&
+          request.resource.data.displayName ==
+            inviteAfter(request.resource.data.onboardingInviteCode).displayName &&
           inviteClaimMatchesRequest(
             request.resource.data.onboardingInviteCode,
             request.resource.data.tenantId
           ));
-      allow update, delete: if isSuperAdmin();
+      allow update: if isSuperAdmin() ||
+        (isSignedIn() &&
+          userId == uid() &&
+          resource.data.tenantId == uid() &&
+          request.resource.data.tenantId == resource.data.tenantId &&
+          request.resource.data.createdAt == resource.data.createdAt);
+      allow delete: if isSuperAdmin();
     }
 
     match /tenants/{tenantId} {
       allow read: if isSuperAdmin() || isTenantMember(tenantId);
-      allow create, update, delete: if isSuperAdmin();
+      allow create: if isSuperAdmin() ||
+        (isSelfWorkspaceOwner(tenantId) &&
+          request.resource.data.createdBy == uid() &&
+          request.resource.data.status == 'active' &&
+          request.resource.data.modules is list);
+      allow update: if isSuperAdmin() || isSelfWorkspaceOwner(tenantId);
+      allow delete: if isSuperAdmin();
 
       match /users/{userId} {
         allow read: if isSuperAdmin() || isTenantMember(tenantId);
         allow create, update, delete: if isSuperAdmin() ||
+          (isSelfWorkspaceOwner(tenantId) && userId == uid()) ||
           (tenantIsActive(tenantId) && requesterIsTenantAdmin(tenantId)) ||
           (isSignedIn() && userId == uid() && inviteClaimMatchesTenantUserRequest(tenantId));
       }

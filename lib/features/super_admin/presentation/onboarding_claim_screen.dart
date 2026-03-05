@@ -60,7 +60,7 @@ class _OnboardingClaimScreenState extends State<OnboardingClaimScreen> {
       }
       _showSnack('Onboarding completado. Bienvenido.');
     } catch (error) {
-      _showSnack('No se pudo reclamar la invitacion: $error');
+      _showSnack('No se pudo reclamar la invitacion: ${_claimErrorText(error)}');
     } finally {
       if (mounted) {
         setState(() {
@@ -74,6 +74,37 @@ class _OnboardingClaimScreenState extends State<OnboardingClaimScreen> {
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  String _claimErrorText(Object error) {
+    final unwrapped = _tryUnwrapError(error);
+    if (unwrapped is UserTenantConflictException) {
+      return 'Este usuario ya pertenece a otro tenant (${unwrapped.existingTenantId}).';
+    }
+    if (unwrapped is StateError) {
+      return unwrapped.message;
+    }
+    if (unwrapped is FirebaseException) {
+      switch (unwrapped.code) {
+        case 'permission-denied':
+          return 'Permiso denegado. Verifica email de invitacion y vigencia del codigo.';
+        case 'not-found':
+          return 'Codigo de invitacion no encontrado.';
+      }
+      return unwrapped.message ?? 'Error de Firebase al reclamar la invitacion.';
+    }
+    return unwrapped.toString();
+  }
+
+  Object _tryUnwrapError(Object error) {
+    try {
+      final dynamic any = error;
+      final inner = any.error;
+      if (inner is Object) {
+        return inner;
+      }
+    } catch (_) {}
+    return error;
   }
 
   @override

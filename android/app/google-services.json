@@ -29,6 +29,13 @@
             {
               "client_id": "71786760529-3qflf8m06m041gvosa57n3ql1arkdfsi.apps.googleusercontent.com",
               "client_type": 3
+            },
+            {
+              "client_id": "71786760529-q1eoc34l3r519r45gueem9eq1hopucvo.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.example.agripy"
+              }
             }
           ]
         }

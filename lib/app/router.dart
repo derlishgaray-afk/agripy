@@ -2,8 +2,12 @@ import 'dart:async';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart'
+    show TargetPlatform, defaultTargetPlatform, kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:google_sign_in/google_sign_in.dart';
 
+import '../core/constants/modules.dart';
 import '../core/services/access_controller.dart';
 import '../core/services/tenant_path.dart';
 import '../core/services/tenant_resolver.dart';
@@ -124,15 +128,13 @@ class SessionController extends ChangeNotifier {
     try {
       superAdminProfile = await _superAdminGuard.loadActiveSuperAdmin(user.uid);
 
-      final tenantId = await _tenantResolver.tryResolveTenantIdForUid(user.uid);
+      var tenantId = await _tenantResolver.tryResolveTenantIdForUid(user.uid);
       if (tenantId == null) {
-        if (isSuperAdmin) {
-          warningMessage =
-              'Sin tenant vinculado. Solo panel Super Admin disponible.';
-          return;
-        }
-        needsOnboarding = true;
-        return;
+        await _provisionPersonalWorkspace(user);
+        tenantId = await _tenantResolver.tryResolveTenantIdForUid(user.uid);
+      }
+      if (tenantId == null) {
+        throw StateError('No se pudo aprovisionar el espacio personal.');
       }
 
       try {
@@ -192,6 +194,57 @@ class SessionController extends ChangeNotifier {
     return fallbackTenantId;
   }
 
+  Future<void> _provisionPersonalWorkspace(User user) async {
+    final now = DateTime.now();
+    final trialEndsAt = now.add(const Duration(days: 7));
+    final tenantId = user.uid;
+    final displayName = _resolveDefaultDisplayName(user);
+
+    final tenantRef = TenantPath.tenantRef(_firestore, tenantId);
+    final tenantUserRef = TenantPath.tenantUserRef(_firestore, tenantId, user.uid);
+    final linkRef = _firestore.collection('user_tenant').doc(user.uid);
+
+    final batch = _firestore.batch();
+    batch.set(tenantRef, {
+      'name': displayName,
+      'status': 'active',
+      'plan': 'trial',
+      'modules': const [AppModules.recetarioAgronomico],
+      'createdAt': Timestamp.fromDate(now),
+      'createdBy': user.uid,
+      'trialEndsAt': Timestamp.fromDate(trialEndsAt),
+    }, SetOptions(merge: true));
+
+    batch.set(tenantUserRef, {
+      'displayName': displayName,
+      'role': 'admin',
+      'status': 'active',
+      'activeModules': const [AppModules.recetarioAgronomico],
+      'createdAt': Timestamp.fromDate(now),
+      'createdBy': user.uid,
+    }, SetOptions(merge: true));
+
+    batch.set(linkRef, {
+      'tenantId': tenantId,
+      'displayName': displayName,
+      'createdAt': Timestamp.fromDate(now),
+    }, SetOptions(merge: true));
+
+    await batch.commit();
+  }
+
+  String _resolveDefaultDisplayName(User user) {
+    final name = user.displayName?.trim();
+    if (name != null && name.isNotEmpty) {
+      return name;
+    }
+    final email = user.email?.trim();
+    if (email != null && email.isNotEmpty) {
+      return email.split('@').first;
+    }
+    return 'Mi espacio';
+  }
+
   String _errorText(Object error) {
     if (error is FirebaseAuthException) {
       return error.message ?? 'Error de autenticacion.';
@@ -222,8 +275,43 @@ class SessionController extends ChangeNotifier {
     );
   }
 
+  Future<void> signInWithGoogle() async {
+    if (kIsWeb) {
+      await _auth.signInWithPopup(GoogleAuthProvider());
+      return;
+    }
+
+    final googleUser = await GoogleSignIn().signIn();
+    if (googleUser == null) {
+      throw StateError('Inicio con Google cancelado.');
+    }
+    final googleAuth = await googleUser.authentication;
+    final credential = GoogleAuthProvider.credential(
+      accessToken: googleAuth.accessToken,
+      idToken: googleAuth.idToken,
+    );
+    await _auth.signInWithCredential(credential);
+  }
+
+  Future<void> signInWithApple() async {
+    final provider = AppleAuthProvider();
+    provider.addScope('email');
+    provider.addScope('name');
+
+    if (kIsWeb) {
+      await _auth.signInWithPopup(provider);
+      return;
+    }
+
+    await _auth.signInWithProvider(provider);
+  }
+
   Future<void> signOut() async {
     await _auth.signOut();
+  }
+
+  Future<void> sendPasswordResetEmail({required String email}) async {
+    await _auth.sendPasswordResetEmail(email: email);
   }
 
   Future<void> refreshSession() async {
@@ -615,7 +703,9 @@ class _LoginScreenState extends State<LoginScreen> {
       }
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(SnackBar(content: Text(error.toString())));
+      ).showSnackBar(
+        SnackBar(content: Text(_friendlyAuthError(error, createAccount))),
+      );
     } finally {
       if (mounted) {
         setState(() {
@@ -625,8 +715,148 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   }
 
+  Future<void> _resetPassword() async {
+    final email = _emailController.text.trim();
+    if (email.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Ingresa tu email para recuperar acceso.')),
+      );
+      return;
+    }
+
+    setState(() {
+      _loading = true;
+    });
+
+    try {
+      await widget.sessionController.sendPasswordResetEmail(email: email);
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Te enviamos un correo para restablecer tu contrasena.',
+          ),
+        ),
+      );
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(_friendlyResetError(error))));
+    } finally {
+      if (mounted) {
+        setState(() {
+          _loading = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _signInWithGoogle() async {
+    setState(() {
+      _loading = true;
+    });
+
+    try {
+      await widget.sessionController.signInWithGoogle();
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(_friendlyAuthError(error, false))));
+    } finally {
+      if (mounted) {
+        setState(() {
+          _loading = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _signInWithApple() async {
+    setState(() {
+      _loading = true;
+    });
+
+    try {
+      await widget.sessionController.signInWithApple();
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(_friendlyAuthError(error, false))));
+    } finally {
+      if (mounted) {
+        setState(() {
+          _loading = false;
+        });
+      }
+    }
+  }
+
+  String _friendlyAuthError(Object error, bool createAccount) {
+    if (error is FirebaseAuthException) {
+      switch (error.code) {
+        case 'email-already-in-use':
+          return 'Ese email ya existe. Usa "Ingresar" con tu contrasena.';
+        case 'invalid-email':
+          return 'Email invalido.';
+        case 'weak-password':
+          return 'Contrasena debil. Minimo 6 caracteres.';
+        case 'user-not-found':
+          return createAccount
+              ? 'No se pudo crear la cuenta.'
+              : 'No existe una cuenta con ese email. Usa "Crear cuenta".';
+        case 'wrong-password':
+        case 'invalid-credential':
+          return 'Email o contrasena incorrectos.';
+        case 'too-many-requests':
+          return 'Demasiados intentos. Espera unos minutos e intenta de nuevo.';
+        case 'account-exists-with-different-credential':
+          return 'Esta cuenta ya existe con otro metodo de inicio de sesion.';
+        case 'operation-not-allowed':
+          return 'Proveedor no habilitado en Firebase Auth.';
+        case 'operation-not-supported-in-this-environment':
+          return 'Este metodo no esta soportado en este dispositivo.';
+      }
+      return error.message ?? 'No se pudo autenticar.';
+    }
+    if (error is StateError) {
+      return error.message;
+    }
+    return error.toString();
+  }
+
+  String _friendlyResetError(Object error) {
+    if (error is FirebaseAuthException) {
+      switch (error.code) {
+        case 'invalid-email':
+          return 'Email invalido.';
+        case 'user-not-found':
+          return 'No existe una cuenta con ese email.';
+        case 'too-many-requests':
+          return 'Demasiados intentos. Espera unos minutos e intenta de nuevo.';
+      }
+      return error.message ?? 'No se pudo enviar el correo de recuperacion.';
+    }
+    return error.toString();
+  }
+
   @override
   Widget build(BuildContext context) {
+    final showAppleButton =
+        kIsWeb ||
+        defaultTargetPlatform == TargetPlatform.iOS ||
+        defaultTargetPlatform == TargetPlatform.macOS;
+
     return Scaffold(
       body: Center(
         child: SingleChildScrollView(
@@ -643,7 +873,31 @@ class _LoginScreenState extends State<LoginScreen> {
                     style: Theme.of(context).textTheme.headlineMedium,
                   ),
                   const SizedBox(height: 8),
-                  const Text('Acceso por empresa'),
+                  const Text('Acceso por usuario'),
+                  const SizedBox(height: 16),
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton.icon(
+                      onPressed: _loading ? null : _signInWithGoogle,
+                      icon: const Icon(Icons.login_outlined),
+                      label: const Text('Continuar con Google'),
+                    ),
+                  ),
+                  if (showAppleButton) ...[
+                    const SizedBox(height: 8),
+                    SizedBox(
+                      width: double.infinity,
+                      child: OutlinedButton.icon(
+                        onPressed: _loading ? null : _signInWithApple,
+                        icon: const Icon(Icons.apple),
+                        label: const Text('Continuar con Apple'),
+                      ),
+                    ),
+                  ],
+                  const SizedBox(height: 16),
+                  const Divider(),
+                  const SizedBox(height: 8),
+                  const Text('O continuar con email'),
                   const SizedBox(height: 20),
                   TextFormField(
                     controller: _emailController,
@@ -692,6 +946,15 @@ class _LoginScreenState extends State<LoginScreen> {
                           ? null
                           : () => _submit(createAccount: true),
                       child: const Text('Crear cuenta'),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      onPressed: _loading ? null : _resetPassword,
+                      icon: const Icon(Icons.lock_reset_outlined),
+                      label: const Text('Recuperar contrasena'),
                     ),
                   ),
                 ],

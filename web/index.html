@@ -33,6 +33,43 @@
   <link rel="manifest" href="manifest.json">
 </head>
 <body>
+  <script>
+    (function () {
+      const versionUrl = new URL('version.json', document.baseURI).toString();
+      let currentVersion = null;
+
+      async function fetchVersion() {
+        const url = versionUrl + '?t=' + Date.now();
+        const response = await fetch(url, { cache: 'no-store' });
+        if (!response.ok) {
+          return null;
+        }
+        const data = await response.json();
+        return typeof data.version === 'string'
+            ? data.version
+            : JSON.stringify(data);
+      }
+
+      async function checkForUpdate() {
+        try {
+          const latestVersion = await fetchVersion();
+          if (!latestVersion) {
+            return;
+          }
+          if (currentVersion == null) {
+            currentVersion = latestVersion;
+            return;
+          }
+          if (latestVersion != currentVersion) {
+            window.location.reload();
+          }
+        } catch (_) {}
+      }
+
+      checkForUpdate();
+      setInterval(checkForUpdate, 60000);
+    })();
+  </script>
   <script src="flutter_bootstrap.js" async></script>
 </body>
 </html>

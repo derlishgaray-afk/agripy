@@ -63,8 +63,7 @@ class DefaultFirebaseOptions {
     messagingSenderId: '71786760529',
     projectId: 'agripy-b5422',
     storageBucket: 'agripy-b5422.firebasestorage.app',
-    iosClientId:
-        '71786760529-q1eoc34l3r519r45gueem9eq1hopucvo.apps.googleusercontent.com',
+    iosClientId: '71786760529-q1eoc34l3r519r45gueem9eq1hopucvo.apps.googleusercontent.com',
     iosBundleId: 'com.example.agripy',
   );
 
@@ -74,8 +73,7 @@ class DefaultFirebaseOptions {
     messagingSenderId: '71786760529',
     projectId: 'agripy-b5422',
     storageBucket: 'agripy-b5422.firebasestorage.app',
-    iosClientId:
-        '71786760529-q1eoc34l3r519r45gueem9eq1hopucvo.apps.googleusercontent.com',
+    iosClientId: '71786760529-q1eoc34l3r519r45gueem9eq1hopucvo.apps.googleusercontent.com',
     iosBundleId: 'com.example.agripy',
   );
 
@@ -87,4 +85,5 @@ class DefaultFirebaseOptions {
     authDomain: 'agripy-b5422.firebaseapp.com',
     storageBucket: 'agripy-b5422.firebasestorage.app',
   );
+
 }

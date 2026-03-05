@@ -3,6 +3,25 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import '../constants/modules.dart';
 import 'tenant_path.dart';
 
+DateTime? _parseDateTime(dynamic value) {
+  if (value == null) {
+    return null;
+  }
+  if (value is Timestamp) {
+    return value.toDate();
+  }
+  if (value is DateTime) {
+    return value;
+  }
+  if (value is int) {
+    return DateTime.fromMillisecondsSinceEpoch(value);
+  }
+  if (value is String) {
+    return DateTime.tryParse(value);
+  }
+  return null;
+}
+
 enum TenantRole { admin, engineer, operator }
 
 TenantRole tenantRoleFromString(String value) {
@@ -93,6 +112,14 @@ class AccessController {
         .toLowerCase();
     if (tenantStatus != 'active') {
       throw StateError('Empresa suspendida. Contactar al administrador.');
+    }
+
+    final planRaw = (tenantData['plan'] as String? ?? '').trim().toLowerCase();
+    final trialEndsAt = _parseDateTime(tenantData['trialEndsAt']);
+    if (planRaw == 'trial' &&
+        trialEndsAt != null &&
+        trialEndsAt.isBefore(DateTime.now())) {
+      throw StateError('Tu prueba de 7 dias ha vencido.');
     }
 
     return tenantData;

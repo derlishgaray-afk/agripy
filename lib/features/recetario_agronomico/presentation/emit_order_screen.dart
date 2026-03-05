@@ -29,7 +29,7 @@ class _EmitOrderScreenState extends State<EmitOrderScreen> {
   final _farmController = TextEditingController();
   final _plotController = TextEditingController();
   final _areaController = TextEditingController();
-  final _assignedController = TextEditingController();
+  final _responsibleController = TextEditingController();
   DateTime? _plannedDate;
   bool _submitting = false;
 
@@ -38,7 +38,8 @@ class _EmitOrderScreenState extends State<EmitOrderScreen> {
   @override
   void initState() {
     super.initState();
-    _assignedController.text = widget.session.uid;
+    final displayName = widget.session.access.displayName.trim();
+    _responsibleController.text = displayName.isEmpty ? 'Usuario' : displayName;
     final repo = RecetarioRepo(
       firestore: FirebaseFirestore.instance,
       tenantId: widget.session.tenantId,
@@ -57,7 +58,7 @@ class _EmitOrderScreenState extends State<EmitOrderScreen> {
     _farmController.dispose();
     _plotController.dispose();
     _areaController.dispose();
-    _assignedController.dispose();
+    _responsibleController.dispose();
     super.dispose();
   }
 
@@ -95,7 +96,7 @@ class _EmitOrderScreenState extends State<EmitOrderScreen> {
         areaHa: parseFlexibleDouble(_areaController.text.trim()),
         plannedDate: _plannedDate,
         engineerName: widget.session.access.displayName,
-        assignedToUid: _assignedController.text.trim(),
+        assignedToUid: widget.session.uid,
       );
       if (!mounted) {
         return;
@@ -184,12 +185,12 @@ class _EmitOrderScreenState extends State<EmitOrderScreen> {
               ),
               const SizedBox(height: 12),
               TextFormField(
-                controller: _assignedController,
+                controller: _responsibleController,
+                readOnly: true,
                 decoration: const InputDecoration(
-                  labelText: 'Responsable UID',
+                  labelText: 'Responsable',
                   border: OutlineInputBorder(),
                 ),
-                validator: _requiredValidator,
               ),
               const SizedBox(height: 12),
               OutlinedButton.icon(
