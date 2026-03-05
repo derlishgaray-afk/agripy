@@ -6,6 +6,8 @@ import '../../../core/services/access_controller.dart';
 import '../../../shared/widgets/responsive_page.dart';
 import '../data/recetario_repo.dart';
 import '../domain/models.dart';
+import '../services/recetario_png.dart';
+import '../services/recetario_share.dart';
 
 class RecipesListScreen extends StatefulWidget {
   const RecipesListScreen({super.key, required this.session});
@@ -18,7 +20,10 @@ class RecipesListScreen extends StatefulWidget {
 
 class _RecipesListScreenState extends State<RecipesListScreen> {
   late final RecetarioRepo _repo;
-  String? _statusFilter;
+  final RecetarioPngService _pngService = RecetarioPngService();
+  final RecetarioShareService _shareService = RecetarioShareService();
+  String _statusFilter = 'all';
+  String? _sharingRecipeId;
 
   @override
   void initState() {
@@ -50,42 +55,262 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
     ).pushNamed(AppRoutes.emitOrder, arguments: recipe);
   }
 
+  String? get _effectiveStatusFilter =>
+      _statusFilter == 'all' ? null : _statusFilter;
+
+  Future<void> _reshareAsPng(Recipe recipe) async {
+    final recipeId = recipe.id;
+    if (recipeId == null || recipeId.isEmpty) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Receta sin identificador.')));
+      return;
+    }
+
+    setState(() {
+      _sharingRecipeId = recipeId;
+    });
+
+    try {
+      final emission =
+          recipe.lastEmission ?? await _repo.getLatestEmissionData(recipeId);
+      if (emission == null) {
+        if (!mounted) {
+          return;
+        }
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('No hay datos de emision guardados para compartir.'),
+          ),
+        );
+        return;
+      }
+
+      final bytes = await _pngService.buildEmissionPng(
+        tenantName: widget.session.tenantName,
+        recipe: recipe,
+        emission: emission,
+      );
+      final filenameCode = emission.code.isEmpty ? recipeId : emission.code;
+      final file = await _shareService.savePngTemp(
+        bytes,
+        'recetario_$filenameCode.png',
+      );
+      final message =
+          'Recetario ${emission.code} - ${emission.plotName} - ${recipe.crop} ${recipe.stage}. '
+          'Objetivo: ${recipe.objective}.';
+      await _shareService.sharePng(file, message);
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('PNG compartido.')));
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudo compartir PNG: $error')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _sharingRecipeId = null;
+        });
+      }
+    }
+  }
+
+  Future<void> _viewEmittedRecipe(Recipe recipe) async {
+    final recipeId = recipe.id;
+    RecipeEmissionData? emission = recipe.lastEmission;
+    if ((emission == null) && recipeId != null && recipeId.isNotEmpty) {
+      emission = await _repo.getLatestEmissionData(recipeId);
+    }
+    if (!mounted) {
+      return;
+    }
+
+    await showDialog<void>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: Text(recipe.title),
+          content: SizedBox(
+            width: 560,
+            child: SingleChildScrollView(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text('Estado: ${_statusLabel(recipe.status)}'),
+                  const SizedBox(height: 8),
+                  Text('Cultivo: ${recipe.crop} - ${recipe.stage}'),
+                  const SizedBox(height: 4),
+                  Text('Objetivo: ${recipe.objective}'),
+                  const SizedBox(height: 4),
+                  Text('Volumen de agua: ${recipe.waterVolumeLHa} L/ha'),
+                  if (recipe.nozzleTypes.trim().isNotEmpty) ...[
+                    const SizedBox(height: 4),
+                    Text('Tipo de pico/boquilla: ${recipe.nozzleTypes}'),
+                  ],
+                  const SizedBox(height: 12),
+                  Text(
+                    'Mezcla / dosis',
+                    style: Theme.of(context).textTheme.titleSmall,
+                  ),
+                  const SizedBox(height: 4),
+                  if (recipe.doseLines.isEmpty)
+                    const Text('- Sin lineas')
+                  else
+                    ...recipe.doseLines.map(
+                      (line) {
+                        final perTank = emission == null
+                            ? 0.0
+                            : _calculatePerTankAmount(
+                                dosePerHa: line.dose,
+                                tankCapacityLt: emission.tankCapacityLt,
+                                waterVolumeLHa: recipe.waterVolumeLHa,
+                              );
+                        return Text(
+                          '- ${line.productName}: Unidad ${line.unit} | Dosis ${line.dose} | Por tanque ${perTank.toStringAsFixed(2)} ${line.unit}',
+                        );
+                      },
+                    ),
+                  const SizedBox(height: 12),
+                  Text(
+                    'Checklist / orden de carga',
+                    style: Theme.of(context).textTheme.titleSmall,
+                  ),
+                  const SizedBox(height: 4),
+                  if (recipe.mixOrder.isEmpty)
+                    const Text('- Sin pasos')
+                  else
+                    ...recipe.mixOrder.map((step) => Text('* $step')),
+                  const SizedBox(height: 12),
+                  if (emission != null) ...[
+                    Text(
+                      'Datos de emisión',
+                      style: Theme.of(context).textTheme.titleSmall,
+                    ),
+                    const SizedBox(height: 4),
+                    Text('Código: ${emission.code}'),
+                    Text('Campo: ${emission.farmName}'),
+                    Text('Lote: ${emission.plotName}'),
+                    Text('Superficie: ${emission.areaHa} ha'),
+                    Text(
+                      'Superficie afectada: ${emission.affectedAreaHa} ha',
+                    ),
+                    Text(
+                      'Capacidad tanque: ${emission.tankCapacityLt} L',
+                    ),
+                    Text(
+                      'Cantidad de tanque: ${emission.tankCount}',
+                    ),
+                    Text('Responsable: ${emission.engineerName}'),
+                    Text('Operador: ${emission.operatorName}'),
+                    Text(
+                      'Fecha emisión: ${_formatDateTime(emission.issuedAt)}',
+                    ),
+                    Text(
+                      'Fecha planificada: ${emission.plannedDate == null ? "No definida" : _formatDateTime(emission.plannedDate!)}',
+                    ),
+                  ] else
+                    const Text('Sin datos de emisión guardados.'),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Cerrar'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  String _statusLabel(String status) {
+    final normalized = status.trim().toLowerCase();
+    if (normalized == 'emitted') {
+      return 'Emitido';
+    }
+    if (normalized == 'published') {
+      return 'Publicado';
+    }
+    return 'Borrador';
+  }
+
+  String _formatDateTime(DateTime dateTime) {
+    return '${dateTime.day.toString().padLeft(2, '0')}/${dateTime.month.toString().padLeft(2, '0')}/${dateTime.year} ${dateTime.hour.toString().padLeft(2, '0')}:${dateTime.minute.toString().padLeft(2, '0')}';
+  }
+
+  double _calculatePerTankAmount({
+    required double dosePerHa,
+    required double tankCapacityLt,
+    required double waterVolumeLHa,
+  }) {
+    if (dosePerHa <= 0 || tankCapacityLt <= 0 || waterVolumeLHa <= 0) {
+      return 0;
+    }
+    return dosePerHa * (tankCapacityLt / waterVolumeLHa);
+  }
+
   @override
   Widget build(BuildContext context) {
     final compact = isCompactWidth(context);
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Recetario Agronomico'),
+        title: const Text('Recetario Agronómico'),
         actions: [
           if (compact)
-            PopupMenuButton<String?>(
+            PopupMenuButton<String>(
               tooltip: 'Filtrar estado',
+              initialValue: _statusFilter,
               icon: const Icon(Icons.filter_list),
               onSelected: (value) => setState(() => _statusFilter = value),
               itemBuilder: (context) => const [
-                PopupMenuItem<String?>(value: null, child: Text('Todos')),
-                PopupMenuItem<String?>(value: 'draft', child: Text('Draft')),
-                PopupMenuItem<String?>(
+                PopupMenuItem<String>(value: 'all', child: Text('Todos')),
+                PopupMenuItem<String>(
+                  value: 'draft',
+                  child: Text('Borrador'),
+                ),
+                PopupMenuItem<String>(
                   value: 'published',
-                  child: Text('Published'),
+                  child: Text('Publicado'),
+                ),
+                PopupMenuItem<String>(
+                  value: 'emitted',
+                  child: Text('Emitido'),
                 ),
               ],
             )
           else
             DropdownButtonHideUnderline(
-              child: DropdownButton<String?>(
+              child: DropdownButton<String>(
                 value: _statusFilter,
-                hint: const Text('Estado'),
-                onChanged: (value) => setState(() => _statusFilter = value),
+                onChanged: (value) {
+                  if (value == null) {
+                    return;
+                  }
+                  setState(() => _statusFilter = value);
+                },
                 items: const [
-                  DropdownMenuItem<String?>(value: null, child: Text('Todos')),
-                  DropdownMenuItem<String?>(
+                  DropdownMenuItem<String>(value: 'all', child: Text('Todos')),
+                  DropdownMenuItem<String>(
                     value: 'draft',
-                    child: Text('Draft'),
+                    child: Text('Borrador'),
                   ),
-                  DropdownMenuItem<String?>(
+                  DropdownMenuItem<String>(
                     value: 'published',
-                    child: Text('Published'),
+                    child: Text('Publicado'),
+                  ),
+                  DropdownMenuItem<String>(
+                    value: 'emitted',
+                    child: Text('Emitido'),
                   ),
                 ],
               ),
@@ -101,7 +326,7 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
             )
           : null,
       body: StreamBuilder<List<Recipe>>(
-        stream: _repo.watchRecipes(status: _statusFilter),
+        stream: _repo.watchRecipes(status: _effectiveStatusFilter),
         builder: (context, snapshot) {
           if (snapshot.hasError) {
             return Center(child: Text('Error: ${snapshot.error}'));
@@ -121,6 +346,10 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
               separatorBuilder: (context, index) => const SizedBox(height: 8),
               itemBuilder: (context, index) {
                 final recipe = recipes[index];
+                final normalizedStatus = recipe.status.trim().toLowerCase();
+                final isEmitted = normalizedStatus == 'emitted';
+                final isPublished = normalizedStatus == 'published';
+                final emission = recipe.lastEmission;
                 return Card(
                   child: Padding(
                     padding: const EdgeInsets.all(12),
@@ -139,26 +368,58 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
                           ],
                         ),
                         const SizedBox(height: 6),
-                        Text('Cultivo: ${recipe.crop} - ${recipe.stage}'),
-                        const SizedBox(height: 4),
-                        Text('Objetivo: ${recipe.objective}'),
+                        if (isEmitted) ...[
+                          Text(
+                            'Fecha de emisión: ${emission == null ? "No definida" : _formatDateTime(emission.issuedAt)}',
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            'Campo: ${emission?.farmName ?? "-"}    Lote: ${emission?.plotName ?? "-"}',
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            'Fecha planificada: ${emission?.plannedDate == null ? "No definida" : _formatDateTime(emission!.plannedDate!)}',
+                          ),
+                        ] else ...[
+                          Text('Cultivo: ${recipe.crop} - ${recipe.stage}'),
+                          const SizedBox(height: 4),
+                          Text('Objetivo: ${recipe.objective}'),
+                        ],
                         const SizedBox(height: 10),
                         Wrap(
                           spacing: 8,
                           runSpacing: 8,
                           children: [
-                            if (_canEdit)
+                            if (_canEdit && !isEmitted)
                               OutlinedButton.icon(
                                 onPressed: () =>
                                     _openRecipeForm(recipe: recipe),
                                 icon: const Icon(Icons.edit_outlined),
                                 label: const Text('Editar'),
                               ),
-                            if (_canEmit && recipe.status == 'published')
+                            if (_canEmit && isPublished)
                               FilledButton.icon(
                                 onPressed: () => _openEmit(recipe),
                                 icon: const Icon(Icons.send_outlined),
                                 label: const Text('Emitir recetario'),
+                              ),
+                            if (isEmitted)
+                              OutlinedButton.icon(
+                                onPressed: () => _viewEmittedRecipe(recipe),
+                                icon: const Icon(Icons.visibility_outlined),
+                                label: const Text('Ver'),
+                              ),
+                            if (_canEmit && isEmitted)
+                              FilledButton.icon(
+                                onPressed: _sharingRecipeId == recipe.id
+                                    ? null
+                                    : () => _reshareAsPng(recipe),
+                                icon: const Icon(Icons.image_outlined),
+                                label: Text(
+                                  _sharingRecipeId == recipe.id
+                                      ? 'Compartiendo...'
+                                      : 'Volver a compartir PNG',
+                                ),
                               ),
                           ],
                         ),
@@ -184,9 +445,18 @@ class _StatusChip extends StatelessWidget {
   Widget build(BuildContext context) {
     final normalized = status.trim().toLowerCase();
     final isPublished = normalized == 'published';
+    final isEmitted = normalized == 'emitted';
     return Chip(
-      label: Text(isPublished ? 'Published' : 'Draft'),
-      backgroundColor: isPublished
+      label: Text(
+        isEmitted
+            ? 'Emitido'
+            : isPublished
+            ? 'Publicado'
+            : 'Borrador',
+      ),
+      backgroundColor: isEmitted
+          ? Colors.blue.shade100
+          : isPublished
           ? Colors.green.shade100
           : Colors.orange.shade100,
     );

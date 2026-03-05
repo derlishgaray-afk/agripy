@@ -82,7 +82,7 @@ class _TenantUsersScreenState extends State<TenantUsersScreen> {
               IconButton(
                 onPressed: _openInviteForm,
                 icon: const Icon(Icons.key_outlined),
-                tooltip: 'Generar invitacion',
+                tooltip: 'Generar invitación',
               ),
             ],
           ),

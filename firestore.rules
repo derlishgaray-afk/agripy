@@ -228,6 +228,24 @@ service cloud.firestore {
           (requesterHasModule(tenantId, 'recetario_agronomico') && requesterCanEditRecetario(tenantId));
       }
 
+      match /fields/{fieldId} {
+        allow read: if isSuperAdmin() || requesterHasModule(tenantId, 'recetario_agronomico');
+        allow create, update, delete: if isSuperAdmin() ||
+          (requesterHasModule(tenantId, 'recetario_agronomico') && requesterCanEditRecetario(tenantId));
+      }
+
+      match /inputs/{inputId} {
+        allow read: if isSuperAdmin() || requesterHasModule(tenantId, 'recetario_agronomico');
+        allow create, update, delete: if isSuperAdmin() ||
+          (requesterHasModule(tenantId, 'recetario_agronomico') && requesterCanEditRecetario(tenantId));
+      }
+
+      match /operators/{operatorId} {
+        allow read: if isSuperAdmin() || requesterHasModule(tenantId, 'recetario_agronomico');
+        allow create, update, delete: if isSuperAdmin() ||
+          (requesterHasModule(tenantId, 'recetario_agronomico') && requesterCanEditRecetario(tenantId));
+      }
+
       match /{document=**} {
         allow read, write: if isSuperAdmin();
       }

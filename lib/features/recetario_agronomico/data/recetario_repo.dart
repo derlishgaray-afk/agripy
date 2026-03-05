@@ -37,17 +37,24 @@ class RecetarioRepo {
 
   Stream<List<Recipe>> watchRecipes({String? status}) {
     _assertModuleAccess();
-    Query<Map<String, dynamic>> query = TenantPath.recipesRef(
-      _firestore,
-      tenantId,
-    ).orderBy('createdAt', descending: true);
-    if (status != null && status.isNotEmpty) {
-      query = query.where('status', isEqualTo: status);
+    final normalizedStatus = status?.trim().toLowerCase();
+    Query<Map<String, dynamic>> query = TenantPath.recipesRef(_firestore, tenantId);
+    if (normalizedStatus == null || normalizedStatus.isEmpty) {
+      query = query.orderBy('createdAt', descending: true);
+    } else if (normalizedStatus == 'draft') {
+      query = query.where('status', isEqualTo: 'draft');
+    } else if (normalizedStatus == 'published') {
+      query = query.where('status', isEqualTo: 'published');
+    } else if (normalizedStatus == 'emitted') {
+      query = query.where('status', isEqualTo: 'emitted');
     }
     return query.snapshots().map((snapshot) {
-      return snapshot.docs
+      final recipes = snapshot.docs
           .map((doc) => Recipe.fromMap(doc.data(), id: doc.id))
           .toList(growable: false);
+      final sorted = recipes.toList(growable: true)
+        ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+      return List.unmodifiable(sorted);
     });
   }
 
@@ -105,8 +112,11 @@ class RecetarioRepo {
     required String farmName,
     required String plotName,
     required double areaHa,
+    required double affectedAreaHa,
+    required double tankCapacityLt,
     DateTime? plannedDate,
     required String engineerName,
+    required String operatorName,
     required String assignedToUid,
   }) async {
     _assertWriteAccess();
@@ -114,25 +124,75 @@ class RecetarioRepo {
       throw StateError('La receta debe estar guardada antes de emitir.');
     }
 
+    final now = DateTime.now();
+    final tankCount = _calculateTankCount(
+      affectedAreaHa: affectedAreaHa,
+      tankCapacityLt: tankCapacityLt,
+      waterVolumeLHa: recipe.waterVolumeLHa,
+    );
     final ordersRef = TenantPath.applicationOrdersRef(_firestore, tenantId);
     final docRef = ordersRef.doc();
+    final emittedRecipeRef = TenantPath.recipesRef(_firestore, tenantId).doc();
     final order = ApplicationOrder(
       id: docRef.id,
-      recipeId: recipe.id!,
+      recipeId: emittedRecipeRef.id,
       code: code,
       farmName: farmName.trim(),
       plotName: plotName.trim(),
       areaHa: areaHa,
-      issuedAt: DateTime.now(),
+      affectedAreaHa: affectedAreaHa,
+      tankCapacityLt: tankCapacityLt,
+      tankCount: tankCount,
+      issuedAt: now,
       plannedDate: plannedDate,
       engineerName: engineerName.trim(),
+      operatorName: operatorName.trim(),
       assignedToUid: assignedToUid.trim(),
       status: 'pending',
       execution: const ExecutionData(done: false),
     );
+    final emissionData = RecipeEmissionData.fromOrder(order);
+    final emittedRecipe = recipe.copyWith(
+      id: emittedRecipeRef.id,
+      status: 'emitted',
+      createdBy: currentUid,
+      createdAt: now,
+      emissionCount: 1,
+      lastEmission: emissionData,
+    );
 
-    await docRef.set(order.toMap());
+    final batch = _firestore.batch();
+    batch.set(docRef, order.toMap());
+    batch.set(emittedRecipeRef, emittedRecipe.toMap());
+    await batch.commit();
     return order;
+  }
+
+  double _calculateTankCount({
+    required double affectedAreaHa,
+    required double tankCapacityLt,
+    required double waterVolumeLHa,
+  }) {
+    if (affectedAreaHa <= 0 || tankCapacityLt <= 0 || waterVolumeLHa <= 0) {
+      return 0;
+    }
+    return affectedAreaHa / (tankCapacityLt / waterVolumeLHa);
+  }
+
+  Future<RecipeEmissionData?> getLatestEmissionData(String recipeId) async {
+    _assertModuleAccess();
+    final snapshot = await TenantPath.applicationOrdersRef(_firestore, tenantId)
+        .where('recipeId', isEqualTo: recipeId)
+        .get();
+    if (snapshot.docs.isEmpty) {
+      return null;
+    }
+    final orders = snapshot.docs
+        .map((doc) => ApplicationOrder.fromMap(doc.data(), id: doc.id))
+        .toList(growable: false);
+    final latest = orders.toList(growable: true)
+      ..sort((a, b) => b.issuedAt.compareTo(a.issuedAt));
+    return RecipeEmissionData.fromOrder(latest.first);
   }
 
   Stream<List<ApplicationOrder>> myOrders() {

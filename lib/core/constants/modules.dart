@@ -4,7 +4,7 @@ abstract final class AppModules {
   static const List<String> availableModules = [recetarioAgronomico];
 
   static const Map<String, String> labels = {
-    recetarioAgronomico: 'Recetario Agronomico',
+    recetarioAgronomico: 'Recetario Agronómico',
   };
 
   static String labelOf(String moduleKey) {

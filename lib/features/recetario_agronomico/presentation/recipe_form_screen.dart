@@ -1,9 +1,13 @@
+import 'dart:async';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
 import '../../../app/router.dart';
 import '../../../shared/widgets/responsive_page.dart';
+import '../data/catalog_repo.dart';
 import '../data/recetario_repo.dart';
+import '../domain/catalog_models.dart';
 import '../domain/models.dart';
 
 class RecipeFormScreen extends StatefulWidget {
@@ -19,17 +23,21 @@ class RecipeFormScreen extends StatefulWidget {
 class _RecipeFormScreenState extends State<RecipeFormScreen> {
   final _formKey = GlobalKey<FormState>();
   late final RecetarioRepo _repo;
+  late final RecetarioCatalogRepo _catalogRepo;
 
   final _titleController = TextEditingController();
   final _objectiveController = TextEditingController();
   final _cropController = TextEditingController();
   final _stageController = TextEditingController();
   final _waterVolumeController = TextEditingController();
+  final _nozzleTypesController = TextEditingController();
   final _warningsController = TextEditingController();
   final _notesController = TextEditingController();
 
   final List<_DoseLineInput> _doseLineInputs = [];
   final List<TextEditingController> _mixOrderControllers = [];
+  StreamSubscription<List<SupplyRegistryItem>>? _suppliesSub;
+  List<SupplyRegistryItem> _supplies = const [];
 
   bool _saving = false;
 
@@ -42,6 +50,21 @@ class _RecipeFormScreenState extends State<RecipeFormScreen> {
       currentUid: widget.session.uid,
       access: widget.session.access,
     );
+    _catalogRepo = RecetarioCatalogRepo(
+      firestore: FirebaseFirestore.instance,
+      tenantId: widget.session.tenantId,
+      currentUid: widget.session.uid,
+      access: widget.session.access,
+    );
+    _suppliesSub = _catalogRepo.watchSupplies().listen((items) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _supplies = items;
+        _syncDoseLinesWithSupplies();
+      });
+    });
     _populateForm(widget.recipe);
   }
 
@@ -57,6 +80,7 @@ class _RecipeFormScreenState extends State<RecipeFormScreen> {
     _cropController.text = recipe.crop;
     _stageController.text = recipe.stage;
     _waterVolumeController.text = recipe.waterVolumeLHa.toString();
+    _nozzleTypesController.text = recipe.nozzleTypes;
     _warningsController.text = recipe.warnings;
     _notesController.text = recipe.notes;
 
@@ -84,6 +108,7 @@ class _RecipeFormScreenState extends State<RecipeFormScreen> {
     _cropController.dispose();
     _stageController.dispose();
     _waterVolumeController.dispose();
+    _nozzleTypesController.dispose();
     _warningsController.dispose();
     _notesController.dispose();
     for (final row in _doseLineInputs) {
@@ -92,7 +117,64 @@ class _RecipeFormScreenState extends State<RecipeFormScreen> {
     for (final step in _mixOrderControllers) {
       step.dispose();
     }
+    _suppliesSub?.cancel();
     super.dispose();
+  }
+
+  void _syncDoseLinesWithSupplies() {
+    for (final line in _doseLineInputs) {
+      final selectedId = line.selectedSupplyId;
+      if (selectedId != null && selectedId.isNotEmpty) {
+        final selectedSupply = _findSupplyById(selectedId);
+        if (selectedSupply == null) {
+          line.selectedSupplyId = null;
+          continue;
+        }
+        line.productName.text = selectedSupply.commercialName;
+        line.activeIngredient.text = selectedSupply.activeIngredient ?? '';
+        line.unit.text = _normalizeUnit(selectedSupply.unit);
+        continue;
+      }
+      final product = line.productName.text.trim();
+      if (product.isEmpty) {
+        continue;
+      }
+      final matched = _findSupplyByCommercialName(product);
+      if (matched == null) {
+        continue;
+      }
+      line.selectedSupplyId = matched.id;
+      line.productName.text = matched.commercialName;
+      line.activeIngredient.text = matched.activeIngredient ?? '';
+      line.unit.text = _normalizeUnit(matched.unit);
+    }
+  }
+
+  SupplyRegistryItem? _findSupplyById(String id) {
+    for (final item in _supplies) {
+      if (item.id == id) {
+        return item;
+      }
+    }
+    return null;
+  }
+
+  SupplyRegistryItem? _findSupplyByCommercialName(String commercialName) {
+    final normalized = commercialName.trim().toLowerCase();
+    for (final item in _supplies) {
+      if (item.commercialName.trim().toLowerCase() == normalized) {
+        return item;
+      }
+    }
+    return null;
+  }
+
+  String _normalizeUnit(String unit) {
+    final normalized = unit.trim();
+    if (normalized == 'Kg.' || normalized == 'Lt.') {
+      return normalized;
+    }
+    return 'Lt.';
   }
 
   Future<void> _saveRecipe({required String status}) async {
@@ -101,6 +183,11 @@ class _RecipeFormScreenState extends State<RecipeFormScreen> {
     }
     if (!widget.session.access.canEditRecetario) {
       _showSnack('Sin permisos para editar recetas.');
+      return;
+    }
+    final isEmitted = widget.recipe?.status.trim().toLowerCase() == 'emitted';
+    if (isEmitted) {
+      _showSnack('Las recetas emitidas no se pueden editar.');
       return;
     }
 
@@ -123,12 +210,15 @@ class _RecipeFormScreenState extends State<RecipeFormScreen> {
       stage: _stageController.text.trim(),
       doseLines: doseLines,
       waterVolumeLHa: parseFlexibleDouble(_waterVolumeController.text.trim()),
+      nozzleTypes: _nozzleTypesController.text.trim(),
       mixOrder: mixOrder,
       warnings: _warningsController.text.trim(),
       notes: _notesController.text.trim(),
       status: status,
       createdBy: widget.recipe?.createdBy ?? widget.session.uid,
       createdAt: widget.recipe?.createdAt ?? DateTime.now(),
+      emissionCount: widget.recipe?.emissionCount ?? 0,
+      lastEmission: widget.recipe?.lastEmission,
     );
 
     setState(() {
@@ -144,7 +234,7 @@ class _RecipeFormScreenState extends State<RecipeFormScreen> {
       if (!mounted) {
         return;
       }
-      _showSnack('Receta guardada ($status).');
+      _showSnack('Receta guardada (${_statusLabel(status)}).');
       Navigator.of(context).pop();
     } catch (error) {
       _showSnack('Error al guardar: $error');
@@ -207,6 +297,14 @@ class _RecipeFormScreenState extends State<RecipeFormScreen> {
                   ),
                   validator: _requiredValidator,
                 ),
+                const SizedBox(height: 12),
+                TextFormField(
+                  controller: _nozzleTypesController,
+                  decoration: const InputDecoration(
+                    labelText: 'Tipo de pico/boquilla',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
                 const SizedBox(height: 18),
                 _buildDoseLinesEditor(),
                 const SizedBox(height: 18),
@@ -241,7 +339,7 @@ class _RecipeFormScreenState extends State<RecipeFormScreen> {
                           ? null
                           : () => _saveRecipe(status: 'draft'),
                       icon: const Icon(Icons.save_outlined),
-                      label: const Text('Guardar draft'),
+                      label: const Text('Guardar borrador'),
                     ),
                     OutlinedButton.icon(
                       onPressed: _saving
@@ -283,7 +381,7 @@ class _RecipeFormScreenState extends State<RecipeFormScreen> {
               TextFormField(
                 controller: _stageController,
                 decoration: const InputDecoration(
-                  labelText: 'Estado fenologico',
+                    labelText: 'Estado fenológico',
                   border: OutlineInputBorder(),
                 ),
                 validator: _requiredValidator,
@@ -308,7 +406,7 @@ class _RecipeFormScreenState extends State<RecipeFormScreen> {
               child: TextFormField(
                 controller: _stageController,
                 decoration: const InputDecoration(
-                  labelText: 'Estado fenologico',
+                  labelText: 'Estado fenológico',
                   border: OutlineInputBorder(),
                 ),
                 validator: _requiredValidator,
@@ -344,6 +442,7 @@ class _RecipeFormScreenState extends State<RecipeFormScreen> {
           _DoseLineEditorRow(
             key: ValueKey('dose_$index'),
             input: _doseLineInputs[index],
+            supplies: _supplies,
             onRemove: _doseLineInputs.length == 1
                 ? null
                 : () {
@@ -445,12 +544,30 @@ class _RecipeFormScreenState extends State<RecipeFormScreen> {
     }
     return null;
   }
+
+  String _statusLabel(String status) {
+    switch (status.trim().toLowerCase()) {
+      case 'published':
+        return 'publicado';
+      case 'emitted':
+        return 'emitido';
+      case 'draft':
+      default:
+        return 'borrador';
+    }
+  }
 }
 
 class _DoseLineEditorRow extends StatelessWidget {
-  const _DoseLineEditorRow({super.key, required this.input, this.onRemove});
+  const _DoseLineEditorRow({
+    super.key,
+    required this.input,
+    required this.supplies,
+    this.onRemove,
+  });
 
   final _DoseLineInput input;
+  final List<SupplyRegistryItem> supplies;
   final VoidCallback? onRemove;
 
   @override
@@ -466,12 +583,37 @@ class _DoseLineEditorRow extends StatelessWidget {
                 Row(
                   children: [
                     Expanded(
-                      child: TextFormField(
-                        controller: input.productName,
+                      child: DropdownButtonFormField<String>(
+                        initialValue: _resolveSelectedSupplyId(
+                          input.selectedSupplyId,
+                          supplies,
+                        ),
                         decoration: const InputDecoration(
                           labelText: 'Producto comercial',
                           border: OutlineInputBorder(),
                         ),
+                        items: supplies
+                            .where((item) => (item.id ?? '').isNotEmpty)
+                            .map(
+                              (item) => DropdownMenuItem<String>(
+                                value: item.id!,
+                                child: Text(item.commercialName),
+                              ),
+                            )
+                            .toList(growable: false),
+                        onChanged: supplies.isEmpty
+                            ? null
+                            : (value) {
+                                final selected = _findSupply(value, supplies);
+                                input.selectedSupplyId = selected?.id;
+                                input.productName.text =
+                                    selected?.commercialName ?? '';
+                                input.activeIngredient.text =
+                                    selected?.activeIngredient ?? '';
+                                input.unit.text = _resolveSelectedUnit(
+                                  selected?.unit ?? 'Lt.',
+                                );
+                              },
                       ),
                     ),
                     IconButton(
@@ -484,8 +626,18 @@ class _DoseLineEditorRow extends StatelessWidget {
                 if (compact) ...[
                   TextFormField(
                     controller: input.activeIngredient,
+                    readOnly: true,
                     decoration: const InputDecoration(
                       labelText: 'Principio activo',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  TextFormField(
+                    controller: input.unit,
+                    readOnly: true,
+                    decoration: const InputDecoration(
+                      labelText: 'Unidad',
                       border: OutlineInputBorder(),
                     ),
                   ),
@@ -506,6 +658,7 @@ class _DoseLineEditorRow extends StatelessWidget {
                       Expanded(
                         child: TextFormField(
                           controller: input.activeIngredient,
+                          readOnly: true,
                           decoration: const InputDecoration(
                             labelText: 'Principio activo',
                             border: OutlineInputBorder(),
@@ -513,8 +666,19 @@ class _DoseLineEditorRow extends StatelessWidget {
                         ),
                       ),
                       const SizedBox(width: 8),
+                      Expanded(
+                        child: TextFormField(
+                          controller: input.unit,
+                          readOnly: true,
+                          decoration: const InputDecoration(
+                            labelText: 'Unidad',
+                            border: OutlineInputBorder(),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
                       SizedBox(
-                        width: 120,
+                        width: 140,
                         child: TextFormField(
                           controller: input.dose,
                           keyboardType: const TextInputType.numberWithOptions(
@@ -528,53 +692,50 @@ class _DoseLineEditorRow extends StatelessWidget {
                       ),
                     ],
                   ),
-                const SizedBox(height: 8),
-                if (compact) ...[
-                  TextFormField(
-                    controller: input.unit,
-                    decoration: const InputDecoration(
-                      labelText: 'Unidad',
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  TextFormField(
-                    controller: input.functionName,
-                    decoration: const InputDecoration(
-                      labelText: 'Funcion',
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
-                ] else
-                  Row(
-                    children: [
-                      Expanded(
-                        child: TextFormField(
-                          controller: input.unit,
-                          decoration: const InputDecoration(
-                            labelText: 'Unidad',
-                            border: OutlineInputBorder(),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: TextFormField(
-                          controller: input.functionName,
-                          decoration: const InputDecoration(
-                            labelText: 'Funcion',
-                            border: OutlineInputBorder(),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
               ],
             );
           },
         ),
       ),
     );
+  }
+
+  String _resolveSelectedUnit(String raw) {
+    final normalized = raw.trim();
+    if (normalized == 'Kg.' || normalized == 'Lt.') {
+      return normalized;
+    }
+    return 'Lt.';
+  }
+
+  String? _resolveSelectedSupplyId(
+    String? rawId,
+    List<SupplyRegistryItem> options,
+  ) {
+    if (rawId == null || rawId.isEmpty) {
+      return null;
+    }
+    for (final item in options) {
+      if (item.id == rawId) {
+        return rawId;
+      }
+    }
+    return null;
+  }
+
+  SupplyRegistryItem? _findSupply(
+    String? id,
+    List<SupplyRegistryItem> options,
+  ) {
+    if (id == null || id.isEmpty) {
+      return null;
+    }
+    for (final item in options) {
+      if (item.id == id) {
+        return item;
+      }
+    }
+    return null;
   }
 }
 
@@ -584,34 +745,39 @@ class _DoseLineInput {
     required this.activeIngredient,
     required this.dose,
     required this.unit,
-    required this.functionName,
+    this.selectedSupplyId,
   });
 
   final TextEditingController productName;
   final TextEditingController activeIngredient;
   final TextEditingController dose;
   final TextEditingController unit;
-  final TextEditingController functionName;
+  String? selectedSupplyId;
 
   factory _DoseLineInput.empty() {
     return _DoseLineInput(
       productName: TextEditingController(),
       activeIngredient: TextEditingController(),
       dose: TextEditingController(),
-      unit: TextEditingController(),
-      functionName: TextEditingController(),
+      unit: TextEditingController(text: 'Lt.'),
+      selectedSupplyId: null,
     );
   }
 
   factory _DoseLineInput.fromLine(DoseLine line) {
+    final normalizedUnit = line.unit.trim();
     return _DoseLineInput(
       productName: TextEditingController(text: line.productName),
       activeIngredient: TextEditingController(
         text: line.activeIngredient ?? '',
       ),
       dose: TextEditingController(text: line.dose.toString()),
-      unit: TextEditingController(text: line.unit),
-      functionName: TextEditingController(text: line.functionName),
+      unit: TextEditingController(
+        text: normalizedUnit == 'Kg.' || normalizedUnit == 'Lt.'
+            ? normalizedUnit
+            : 'Lt.',
+      ),
+      selectedSupplyId: null,
     );
   }
 
@@ -625,8 +791,8 @@ class _DoseLineInput {
       productName: product,
       activeIngredient: active.isEmpty ? null : active,
       dose: parseFlexibleDouble(dose.text.trim()),
-      unit: unit.text.trim(),
-      functionName: functionName.text.trim(),
+      unit: unit.text.trim().isEmpty ? 'Lt.' : unit.text.trim(),
+      functionName: '',
     );
   }
 
@@ -635,6 +801,5 @@ class _DoseLineInput {
     activeIngredient.dispose();
     dose.dispose();
     unit.dispose();
-    functionName.dispose();
   }
 }

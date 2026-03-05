@@ -20,6 +20,22 @@ class RecetarioShareService {
   }
 
   Future<XFile> savePdfTemp(Uint8List bytes, String filename) async {
+    return _saveTemp(
+      bytes: bytes,
+      filename: filename,
+      mimeType: 'application/pdf',
+    );
+  }
+
+  Future<XFile> savePngTemp(Uint8List bytes, String filename) async {
+    return _saveTemp(bytes: bytes, filename: filename, mimeType: 'image/png');
+  }
+
+  Future<XFile> _saveTemp({
+    required Uint8List bytes,
+    required String filename,
+    required String mimeType,
+  }) async {
     final normalizedFileName = filename.replaceAll(
       RegExp(r'[^a-zA-Z0-9._-]'),
       '_',
@@ -28,7 +44,7 @@ class RecetarioShareService {
     if (kIsWeb) {
       return XFile.fromData(
         bytes,
-        mimeType: 'application/pdf',
+        mimeType: mimeType,
         name: normalizedFileName,
       );
     }
@@ -36,10 +52,18 @@ class RecetarioShareService {
     final tmpDir = await _resolveTempDirectory();
     final file = File('${tmpDir.path}/$normalizedFileName');
     await file.writeAsBytes(bytes, flush: true);
-    return XFile(file.path, mimeType: 'application/pdf', name: normalizedFileName);
+    return XFile(file.path, mimeType: mimeType, name: normalizedFileName);
   }
 
   Future<void> sharePdf(XFile file, String text) async {
+    await _share(file, text);
+  }
+
+  Future<void> sharePng(XFile file, String text) async {
+    await _share(file, text);
+  }
+
+  Future<void> _share(XFile file, String text) async {
     await SharePlus.instance.share(
       ShareParams(text: text, files: [file]),
     );

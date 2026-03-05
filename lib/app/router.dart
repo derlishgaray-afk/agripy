@@ -13,6 +13,10 @@ import '../core/services/tenant_path.dart';
 import '../core/services/tenant_resolver.dart';
 import '../features/recetario_agronomico/domain/models.dart';
 import '../features/recetario_agronomico/presentation/emit_order_screen.dart';
+import '../features/recetario_agronomico/presentation/fields_registry_screen.dart';
+import '../features/recetario_agronomico/presentation/inputs_registry_screen.dart';
+import '../features/recetario_agronomico/presentation/operators_registry_screen.dart';
+import '../features/recetario_agronomico/presentation/recetario_home_screen.dart';
 import '../features/recetario_agronomico/presentation/recipe_form_screen.dart';
 import '../features/recetario_agronomico/presentation/recipes_list_screen.dart';
 import '../features/super_admin/domain/models.dart';
@@ -31,9 +35,13 @@ import '../shared/widgets/responsive_page.dart';
 
 class AppRoutes {
   static const String home = '/';
+  static const String recetarioHome = '/recetario-home';
   static const String recipes = '/recipes';
   static const String recipeForm = '/recipe-form';
   static const String emitOrder = '/emit-order';
+  static const String fieldRegistry = '/field-registry';
+  static const String inputRegistry = '/input-registry';
+  static const String operatorRegistry = '/operator-registry';
 
   static const String superAdminHome = '/super-admin';
   static const String superAdminTenants = '/super-admin/tenants';
@@ -255,7 +263,7 @@ class SessionController extends ChangeNotifier {
     if (error is StateError) {
       return error.message;
     }
-    return 'Error inesperado al cargar sesion.';
+    return 'Error inesperado al cargar sesión.';
   }
 
   Future<void> signInWithEmailPassword({
@@ -341,6 +349,11 @@ class AppRouter {
           settings: settings,
           builder: (_) => _RootScreen(sessionController: sessionController),
         );
+      case AppRoutes.recetarioHome:
+        return _recetarioGuardRoute(
+          settings: settings,
+          builder: (session) => RecetarioHomeScreen(session: session),
+        );
       case AppRoutes.recipes:
         return _recetarioGuardRoute(
           settings: settings,
@@ -353,7 +366,7 @@ class AppRouter {
             final arg = settings.arguments;
             if (arg != null && arg is! Recipe) {
               return const _RouteErrorScreen(
-                message: 'Argumento invalido para receta.',
+                message: 'Argumento inválido para receta.',
               );
             }
             return RecipeFormScreen(session: session, recipe: arg as Recipe?);
@@ -371,6 +384,21 @@ class AppRouter {
             }
             return EmitOrderScreen(session: session, recipe: arg);
           },
+        );
+      case AppRoutes.fieldRegistry:
+        return _recetarioGuardRoute(
+          settings: settings,
+          builder: (session) => FieldsRegistryScreen(session: session),
+        );
+      case AppRoutes.inputRegistry:
+        return _recetarioGuardRoute(
+          settings: settings,
+          builder: (session) => InputsRegistryScreen(session: session),
+        );
+      case AppRoutes.operatorRegistry:
+        return _recetarioGuardRoute(
+          settings: settings,
+          builder: (session) => OperatorsRegistryScreen(session: session),
         );
       case AppRoutes.superAdminHome:
         return _superAdminGuardRoute(
@@ -394,7 +422,7 @@ class AppRouter {
             final arg = settings.arguments;
             if (arg is! TenantFormArgs) {
               return const _RouteErrorScreen(
-                message: 'Argumento invalido para tenant form.',
+                message: 'Argumento inválido para tenant form.',
               );
             }
             return TenantFormScreen(args: arg);
@@ -407,7 +435,7 @@ class AppRouter {
             final arg = settings.arguments;
             if (arg is! TenantDetailArgs) {
               return const _RouteErrorScreen(
-                message: 'Argumento invalido para tenant detail.',
+                message: 'Argumento inválido para tenant detail.',
               );
             }
             return TenantDetailScreen(args: arg);
@@ -420,7 +448,7 @@ class AppRouter {
             final arg = settings.arguments;
             if (arg is! TenantUsersArgs) {
               return const _RouteErrorScreen(
-                message: 'Argumento invalido para tenant users.',
+                message: 'Argumento inválido para tenant users.',
               );
             }
             return TenantUsersScreen(args: arg);
@@ -433,7 +461,7 @@ class AppRouter {
             final arg = settings.arguments;
             if (arg is! TenantUserFormArgs) {
               return const _RouteErrorScreen(
-                message: 'Argumento invalido para tenant user form.',
+                message: 'Argumento inválido para tenant user form.',
               );
             }
             return TenantUserFormScreen(args: arg);
@@ -446,7 +474,7 @@ class AppRouter {
             final arg = settings.arguments;
             if (arg is! TenantInviteFormArgs) {
               return const _RouteErrorScreen(
-                message: 'Argumento invalido para tenant invite form.',
+                message: 'Argumento inválido para tenant invite form.',
               );
             }
             return TenantInviteFormScreen(args: arg);
@@ -542,7 +570,7 @@ class _RootScreen extends StatelessWidget {
       return BlockedScreen(
         title: 'Acceso bloqueado',
         message: sessionController.blockingMessage!,
-        actionLabel: 'Cerrar sesion',
+        actionLabel: 'Cerrar sesión',
         onAction: sessionController.signOut,
       );
     }
@@ -553,7 +581,7 @@ class _RootScreen extends StatelessWidget {
         message:
             sessionController.blockingMessage ??
             'No se pudo resolver acceso para este usuario.',
-        actionLabel: 'Cerrar sesion',
+        actionLabel: 'Cerrar sesión',
         onAction: sessionController.signOut,
       );
     }
@@ -578,7 +606,7 @@ class _ModuleHomeScreen extends StatelessWidget {
           child: ListTile(
             leading: const Icon(Icons.admin_panel_settings_outlined),
             title: const Text('Super Admin'),
-            subtitle: const Text('Panel de administracion global'),
+            subtitle: const Text('Panel de administración global'),
             trailing: const Icon(Icons.chevron_right),
             onTap: () =>
                 Navigator.of(context).pushNamed(AppRoutes.superAdminHome),
@@ -592,10 +620,11 @@ class _ModuleHomeScreen extends StatelessWidget {
         Card(
           child: ListTile(
             leading: const Icon(Icons.description_outlined),
-            title: const Text('Recetario Agronomico'),
+            title: const Text('Recetario Agronómico'),
             subtitle: const Text('Crear, emitir y compartir recetarios'),
             trailing: const Icon(Icons.chevron_right),
-            onTap: () => Navigator.of(context).pushNamed(AppRoutes.recipes),
+            onTap: () =>
+                Navigator.of(context).pushNamed(AppRoutes.recetarioHome),
           ),
         ),
       );
@@ -615,7 +644,7 @@ class _ModuleHomeScreen extends StatelessWidget {
           IconButton(
             onPressed: sessionController.signOut,
             icon: const Icon(Icons.logout),
-            tooltip: 'Cerrar sesion',
+            tooltip: 'Cerrar sesión',
           ),
         ],
       ),
@@ -808,7 +837,7 @@ class _LoginScreenState extends State<LoginScreen> {
         case 'email-already-in-use':
           return 'Ese email ya existe. Usa "Ingresar" con tu contrasena.';
         case 'invalid-email':
-          return 'Email invalido.';
+          return 'Email inválido.';
         case 'weak-password':
           return 'Contrasena debil. Minimo 6 caracteres.';
         case 'user-not-found':
@@ -821,11 +850,11 @@ class _LoginScreenState extends State<LoginScreen> {
         case 'too-many-requests':
           return 'Demasiados intentos. Espera unos minutos e intenta de nuevo.';
         case 'account-exists-with-different-credential':
-          return 'Esta cuenta ya existe con otro metodo de inicio de sesion.';
+          return 'Esta cuenta ya existe con otro método de inicio de sesión.';
         case 'operation-not-allowed':
           return 'Proveedor no habilitado en Firebase Auth.';
         case 'operation-not-supported-in-this-environment':
-          return 'Este metodo no esta soportado en este dispositivo.';
+          return 'Este método no está soportado en este dispositivo.';
       }
       return error.message ?? 'No se pudo autenticar.';
     }
@@ -839,7 +868,7 @@ class _LoginScreenState extends State<LoginScreen> {
     if (error is FirebaseAuthException) {
       switch (error.code) {
         case 'invalid-email':
-          return 'Email invalido.';
+          return 'Email inválido.';
         case 'user-not-found':
           return 'No existe una cuenta con ese email.';
         case 'too-many-requests':

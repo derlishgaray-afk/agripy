@@ -44,7 +44,7 @@ class _OnboardingClaimScreenState extends State<OnboardingClaimScreen> {
   Future<void> _claimInvite() async {
     final code = _codeController.text.trim().toUpperCase();
     if (code.isEmpty) {
-      _showSnack('Ingresa un codigo de invitacion.');
+      _showSnack('Ingresa un código de invitación.');
       return;
     }
 
@@ -60,7 +60,7 @@ class _OnboardingClaimScreenState extends State<OnboardingClaimScreen> {
       }
       _showSnack('Onboarding completado. Bienvenido.');
     } catch (error) {
-      _showSnack('No se pudo reclamar la invitacion: ${_claimErrorText(error)}');
+      _showSnack('No se pudo reclamar la invitación: ${_claimErrorText(error)}');
     } finally {
       if (mounted) {
         setState(() {
@@ -87,11 +87,11 @@ class _OnboardingClaimScreenState extends State<OnboardingClaimScreen> {
     if (unwrapped is FirebaseException) {
       switch (unwrapped.code) {
         case 'permission-denied':
-          return 'Permiso denegado. Verifica email de invitacion y vigencia del codigo.';
+          return 'Permiso denegado. Verifica email de invitación y vigencia del código.';
         case 'not-found':
-          return 'Codigo de invitacion no encontrado.';
+          return 'Código de invitación no encontrado.';
       }
-      return unwrapped.message ?? 'Error de Firebase al reclamar la invitacion.';
+      return unwrapped.message ?? 'Error de Firebase al reclamar la invitación.';
     }
     return unwrapped.toString();
   }
@@ -116,7 +116,7 @@ class _OnboardingClaimScreenState extends State<OnboardingClaimScreen> {
           IconButton(
             onPressed: widget.onSignOut,
             icon: const Icon(Icons.logout),
-            tooltip: 'Cerrar sesion',
+            tooltip: 'Cerrar sesión',
           ),
         ],
       ),
@@ -130,14 +130,14 @@ class _OnboardingClaimScreenState extends State<OnboardingClaimScreen> {
             ),
             const SizedBox(height: 8),
             const Text(
-              'Ingresa el codigo de invitacion provisto por el Super Admin para vincularte a tu empresa.',
+              'Ingresa el código de invitación provisto por el Super Admin para vincularte a tu empresa.',
             ),
             const SizedBox(height: 20),
             TextField(
               controller: _codeController,
               textCapitalization: TextCapitalization.characters,
               decoration: const InputDecoration(
-                labelText: 'Codigo de invitacion',
+                labelText: 'Código de invitación',
                 border: OutlineInputBorder(),
               ),
             ),

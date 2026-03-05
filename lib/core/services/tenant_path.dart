@@ -21,6 +21,22 @@ class TenantPath {
   static String applicationOrderDoc(String tenantId, String orderId) =>
       '${applicationOrdersCollection(tenantId)}/$orderId';
 
+  static String fieldsCollection(String tenantId) => 'tenants/$tenantId/fields';
+
+  static String fieldDoc(String tenantId, String fieldId) =>
+      '${fieldsCollection(tenantId)}/$fieldId';
+
+  static String inputsCollection(String tenantId) => 'tenants/$tenantId/inputs';
+
+  static String inputDoc(String tenantId, String inputId) =>
+      '${inputsCollection(tenantId)}/$inputId';
+
+  static String operatorsCollection(String tenantId) =>
+      'tenants/$tenantId/operators';
+
+  static String operatorDoc(String tenantId, String operatorId) =>
+      '${operatorsCollection(tenantId)}/$operatorId';
+
   static DocumentReference<Map<String, dynamic>> tenantRef(
     FirebaseFirestore firestore,
     String tenantId,
@@ -64,5 +80,50 @@ class TenantPath {
     String orderId,
   ) {
     return firestore.doc(applicationOrderDoc(tenantId, orderId));
+  }
+
+  static CollectionReference<Map<String, dynamic>> fieldsRef(
+    FirebaseFirestore firestore,
+    String tenantId,
+  ) {
+    return firestore.collection(fieldsCollection(tenantId));
+  }
+
+  static DocumentReference<Map<String, dynamic>> fieldRef(
+    FirebaseFirestore firestore,
+    String tenantId,
+    String fieldId,
+  ) {
+    return firestore.doc(fieldDoc(tenantId, fieldId));
+  }
+
+  static CollectionReference<Map<String, dynamic>> inputsRef(
+    FirebaseFirestore firestore,
+    String tenantId,
+  ) {
+    return firestore.collection(inputsCollection(tenantId));
+  }
+
+  static DocumentReference<Map<String, dynamic>> inputRef(
+    FirebaseFirestore firestore,
+    String tenantId,
+    String inputId,
+  ) {
+    return firestore.doc(inputDoc(tenantId, inputId));
+  }
+
+  static CollectionReference<Map<String, dynamic>> operatorsRef(
+    FirebaseFirestore firestore,
+    String tenantId,
+  ) {
+    return firestore.collection(operatorsCollection(tenantId));
+  }
+
+  static DocumentReference<Map<String, dynamic>> operatorRef(
+    FirebaseFirestore firestore,
+    String tenantId,
+    String operatorId,
+  ) {
+    return firestore.doc(operatorDoc(tenantId, operatorId));
   }
 }

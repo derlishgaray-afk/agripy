@@ -200,7 +200,7 @@ class SuperAdminRepo {
         .toList(growable: false);
     if (invalidModules.isNotEmpty) {
       throw StateError(
-        'La invitacion contiene modulos no contratados por el tenant: ${invalidModules.join(', ')}',
+        'La invitación contiene módulos no contratados por el tenant: ${invalidModules.join(', ')}',
       );
     }
 
@@ -258,7 +258,7 @@ class SuperAdminRepo {
   }) async {
     final invite = await findPendingInviteByCode(inviteCode);
     if (invite == null || invite.id == null) {
-      throw StateError('Codigo de invitacion invalido o vencido.');
+      throw StateError('Código de invitación inválido o vencido.');
     }
 
     final inviteRef = _tenantInvites.doc(invite.id!);

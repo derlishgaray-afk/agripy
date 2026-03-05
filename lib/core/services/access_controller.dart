@@ -33,7 +33,7 @@ TenantRole tenantRoleFromString(String value) {
     case 'operator':
       return TenantRole.operator;
     default:
-      throw StateError('Rol invalido: $value');
+      throw StateError('Rol inválido: $value');
   }
 }
 
@@ -68,7 +68,7 @@ class TenantUserAccess {
     final displayNameRaw = map['displayName'];
 
     if (roleRaw is! String || statusRaw is! String) {
-      throw StateError('Documento de acceso invalido.');
+      throw StateError('Documento de acceso inválido.');
     }
 
     final modules = <String>[];

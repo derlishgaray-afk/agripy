@@ -109,7 +109,7 @@ class _TenantInviteFormScreenState extends State<TenantInviteFormScreen> {
           return AlertDialog(
             title: const Text('Invitacion creada'),
             content: SelectableText(
-              'Codigo: ${invite.inviteCode}\n\n'
+              'Código: ${invite.inviteCode}\n\n'
               'Comparti este codigo con el usuario para que complete onboarding.',
             ),
             actions: [
@@ -127,7 +127,7 @@ class _TenantInviteFormScreenState extends State<TenantInviteFormScreen> {
       }
       Navigator.of(context).pop(true);
     } catch (error) {
-      _showSnack('Error al crear invitacion: $error');
+      _showSnack('Error al crear invitación: $error');
     } finally {
       if (mounted) {
         setState(() {
@@ -182,7 +182,7 @@ class _TenantInviteFormScreenState extends State<TenantInviteFormScreen> {
                   validator: (value) {
                     final text = value?.trim() ?? '';
                     if (text.isEmpty || !text.contains('@')) {
-                      return 'Email invalido';
+                      return 'Email inválido';
                     }
                     return null;
                   },
@@ -280,7 +280,7 @@ class _TenantInviteFormScreenState extends State<TenantInviteFormScreen> {
                 FilledButton.icon(
                   onPressed: _saving ? null : _createInvite,
                   icon: const Icon(Icons.key_outlined),
-                  label: const Text('Generar codigo de invitacion'),
+                  label: const Text('Generar código de invitación'),
                 ),
                 if (_saving) ...[
                   const SizedBox(height: 12),

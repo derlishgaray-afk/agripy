@@ -28,7 +28,7 @@ class RecetarioPdfService {
               pw.SizedBox(height: 12),
               _buildIdentity(recipe, order, dateFormat),
               pw.SizedBox(height: 10),
-              _buildDoseTable(recipe),
+              _buildDoseTable(recipe, order),
               pw.SizedBox(height: 10),
               _buildWaterVolume(recipe),
               pw.SizedBox(height: 10),
@@ -61,7 +61,7 @@ class RecetarioPdfService {
         crossAxisAlignment: pw.CrossAxisAlignment.start,
         children: [
           pw.Text(
-            'AGRIpy - Recetario Agronomico',
+            'AGRIpy - Recetario Agronómico',
             style: pw.TextStyle(
               fontSize: 17,
               fontWeight: pw.FontWeight.bold,
@@ -75,8 +75,23 @@ class RecetarioPdfService {
             children: [
               pw.Text('Empresa: $tenantName'),
               pw.Text('Responsable: ${order.engineerName}'),
-              pw.Text('Emision: ${dateFormat.format(order.issuedAt)}'),
-              pw.Text('Codigo: ${order.code}'),
+            ],
+          ),
+          pw.SizedBox(height: 4),
+          pw.Wrap(
+            spacing: 12,
+            runSpacing: 4,
+            children: [
+              pw.Text('Operador: ${order.operatorName}'),
+            ],
+          ),
+          pw.SizedBox(height: 2),
+          pw.Wrap(
+            spacing: 12,
+            runSpacing: 4,
+            children: [
+              pw.Text('Código: ${order.code}'),
+              pw.Text('Emisión: ${dateFormat.format(order.issuedAt)}'),
             ],
           ),
         ],
@@ -101,18 +116,36 @@ class RecetarioPdfService {
       child: pw.Column(
         crossAxisAlignment: pw.CrossAxisAlignment.start,
         children: [
-          _sectionTitle('Identificacion'),
+          _sectionTitle('Identificación'),
           pw.SizedBox(height: 6),
           pw.Wrap(
             spacing: 12,
             runSpacing: 4,
             children: [
-              pw.Text('Campo: ${order.farmName}'),
-              pw.Text('Lote: ${order.plotName}'),
-              pw.Text('Superficie: ${order.areaHa.toStringAsFixed(2)} ha'),
-              pw.Text('Cultivo: ${recipe.crop}'),
-              pw.Text('Estado fenologico: ${recipe.stage}'),
-              pw.Text('Fecha planificada: $plannedDate'),
+              _inlineField('Campo', order.farmName),
+              _inlineField('Lote', order.plotName, highlightValue: true),
+              _inlineField('Superficie', '${order.areaHa.toStringAsFixed(2)} ha'),
+              _inlineField(
+                'Superficie afectada',
+                '${order.affectedAreaHa.toStringAsFixed(2)} ha',
+                highlightValue: true,
+              ),
+              _inlineField(
+                'Capacidad tanque',
+                '${order.tankCapacityLt.toStringAsFixed(2)} L',
+              ),
+              _inlineField(
+                'Cantidad de tanque',
+                order.tankCount.toStringAsFixed(2),
+                highlightValue: true,
+              ),
+              _inlineField('Cultivo', recipe.crop),
+              _inlineField('Estado fenológico', recipe.stage),
+              _inlineField(
+                'Fecha planificada',
+                plannedDate,
+                highlightValue: true,
+              ),
             ],
           ),
           pw.SizedBox(height: 6),
@@ -122,22 +155,28 @@ class RecetarioPdfService {
     );
   }
 
-  pw.Widget _buildDoseTable(Recipe recipe) {
+  pw.Widget _buildDoseTable(Recipe recipe, ApplicationOrder order) {
     final headers = [
       'Producto comercial',
       'Principio activo',
-      'Dosis',
       'Unidad',
-      'Funcion',
+      'Dosis',
+      'Por tanque',
     ];
+    final tankCapacityLt = order.tankCapacityLt;
+    final waterVolumeLHa = recipe.waterVolumeLHa;
     final data = recipe.doseLines
         .map(
           (line) => [
             line.productName,
             line.activeIngredient ?? '-',
-            line.dose.toStringAsFixed(2),
             line.unit,
-            line.functionName,
+            line.dose.toStringAsFixed(2),
+            _calculatePerTankAmount(
+              dosePerHa: line.dose,
+              tankCapacityLt: tankCapacityLt,
+              waterVolumeLHa: waterVolumeLHa,
+            ).toStringAsFixed(2),
           ],
         )
         .toList();
@@ -169,6 +208,17 @@ class RecetarioPdfService {
     );
   }
 
+  double _calculatePerTankAmount({
+    required double dosePerHa,
+    required double tankCapacityLt,
+    required double waterVolumeLHa,
+  }) {
+    if (dosePerHa <= 0 || tankCapacityLt <= 0 || waterVolumeLHa <= 0) {
+      return 0;
+    }
+    return dosePerHa * (tankCapacityLt / waterVolumeLHa);
+  }
+
   pw.Widget _buildWaterVolume(Recipe recipe) {
     return pw.Container(
       padding: const pw.EdgeInsets.all(8),
@@ -176,30 +226,61 @@ class RecetarioPdfService {
         color: PdfColors.grey100,
         borderRadius: pw.BorderRadius.circular(4),
       ),
-      child: pw.Text(
-        'Volumen de agua: ${recipe.waterVolumeLHa.toStringAsFixed(2)} L/ha',
-        style: pw.TextStyle(fontWeight: pw.FontWeight.bold),
+      child: pw.Column(
+        crossAxisAlignment: pw.CrossAxisAlignment.start,
+        children: [
+          pw.Text(
+            'Volumen de agua: ${recipe.waterVolumeLHa.toStringAsFixed(2)} L/ha',
+            style: pw.TextStyle(fontWeight: pw.FontWeight.bold),
+          ),
+          if (recipe.nozzleTypes.trim().isNotEmpty) ...[
+            pw.SizedBox(height: 4),
+            _inlineField(
+              'Tipo de pico/boquilla',
+              recipe.nozzleTypes,
+              highlightValue: true,
+            ),
+          ],
+        ],
       ),
     );
   }
 
   pw.Widget _buildMixOrder(Recipe recipe) {
-    final lines = recipe.mixOrder.isEmpty
-        ? ['Sin pasos definidos.']
-        : recipe.mixOrder;
+    final linearOrder = recipe.mixOrder.isEmpty
+        ? 'Sin pasos definidos.'
+        : recipe.mixOrder.map((step) => step.trim()).where((step) => step.isNotEmpty).join(' -> ');
 
     return pw.Column(
       crossAxisAlignment: pw.CrossAxisAlignment.start,
       children: [
         _sectionTitle('Checklist / Orden de carga'),
         pw.SizedBox(height: 4),
-        ...lines.map(
-          (line) => pw.Padding(
-            padding: const pw.EdgeInsets.only(bottom: 2),
-            child: pw.Bullet(text: line),
-          ),
-        ),
+        pw.Text(linearOrder.isEmpty ? 'Sin pasos definidos.' : linearOrder),
       ],
+    );
+  }
+
+  pw.Widget _inlineField(
+    String label,
+    String value, {
+    bool highlightValue = false,
+  }) {
+    return pw.RichText(
+      text: pw.TextSpan(
+        children: [
+          pw.TextSpan(text: '$label: '),
+          pw.TextSpan(
+            text: value,
+            style: highlightValue
+                ? pw.TextStyle(
+                    fontWeight: pw.FontWeight.bold,
+                    color: PdfColors.red700,
+                  )
+                : null,
+          ),
+        ],
+      ),
     );
   }
 
