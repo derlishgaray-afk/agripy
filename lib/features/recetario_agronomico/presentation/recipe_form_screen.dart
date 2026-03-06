@@ -270,23 +270,19 @@ class _RecipeFormScreenState extends State<RecipeFormScreen> {
             child: ListView(
               padding: const EdgeInsets.only(bottom: 32),
               children: [
+                Text(
+                  'Titulo',
+                  style: Theme.of(
+                    context,
+                  ).textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w700),
+                ),
+                const SizedBox(height: 6),
                 TextFormField(
                   controller: _titleController,
-                  decoration: InputDecoration(
-                    labelText: 'Titulo',
+                  decoration: const InputDecoration(
                     hintText: 'Ej: 5ta. Aplicacion',
-                    floatingLabelBehavior: FloatingLabelBehavior.always,
-                    labelStyle: TextStyle(
-                      fontWeight: FontWeight.w600,
-                      color: Theme.of(context).colorScheme.onSurfaceVariant,
-                    ),
                     border: OutlineInputBorder(),
-                    contentPadding: const EdgeInsets.fromLTRB(12, 18, 12, 14),
-                    floatingLabelStyle: TextStyle(
-                      height: 1.2,
-                      fontWeight: FontWeight.w700,
-                      color: Theme.of(context).colorScheme.primary,
-                    ),
+                    contentPadding: EdgeInsets.fromLTRB(12, 16, 12, 14),
                   ),
                   validator: _requiredValidator,
                 ),
