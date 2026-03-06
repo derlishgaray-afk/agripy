@@ -1313,7 +1313,7 @@ class _PdfPreviewPanel extends StatelessWidget {
       tableDataRows.add(
         TableRow(
           decoration: BoxDecoration(
-            color: isGreyGroup ? const Color(0x11000000) : Colors.transparent,
+            color: isGreyGroup ? const Color(0x1F000000) : Colors.transparent,
           ),
           children: [
             _TableCell(dateTimeFormat.format(row.issuedAt)),

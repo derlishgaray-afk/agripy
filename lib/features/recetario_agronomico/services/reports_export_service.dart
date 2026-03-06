@@ -185,7 +185,7 @@ class ReportsExportService {
       rows.add(
         pw.TableRow(
           decoration: pw.BoxDecoration(
-            color: codeGroupIndex.isOdd ? PdfColors.grey100 : PdfColors.white,
+            color: codeGroupIndex.isOdd ? PdfColors.grey200 : PdfColors.white,
           ),
           children: [
             _pdfCell(item.orderCode),
