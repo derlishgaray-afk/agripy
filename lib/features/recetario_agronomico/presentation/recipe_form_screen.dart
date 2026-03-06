@@ -35,7 +35,6 @@ class _RecipeFormScreenState extends State<RecipeFormScreen> {
   final _notesController = TextEditingController();
 
   final List<_DoseLineInput> _doseLineInputs = [];
-  final List<TextEditingController> _mixOrderControllers = [];
   StreamSubscription<List<SupplyRegistryItem>>? _suppliesSub;
   List<SupplyRegistryItem> _supplies = const [];
 
@@ -71,7 +70,6 @@ class _RecipeFormScreenState extends State<RecipeFormScreen> {
   void _populateForm(Recipe? recipe) {
     if (recipe == null) {
       _doseLineInputs.add(_DoseLineInput.empty());
-      _mixOrderControllers.add(TextEditingController());
       return;
     }
 
@@ -91,14 +89,6 @@ class _RecipeFormScreenState extends State<RecipeFormScreen> {
         _doseLineInputs.add(_DoseLineInput.fromLine(line));
       }
     }
-
-    if (recipe.mixOrder.isEmpty) {
-      _mixOrderControllers.add(TextEditingController());
-    } else {
-      for (final item in recipe.mixOrder) {
-        _mixOrderControllers.add(TextEditingController(text: item));
-      }
-    }
   }
 
   @override
@@ -113,9 +103,6 @@ class _RecipeFormScreenState extends State<RecipeFormScreen> {
     _notesController.dispose();
     for (final row in _doseLineInputs) {
       row.dispose();
-    }
-    for (final step in _mixOrderControllers) {
-      step.dispose();
     }
     _suppliesSub?.cancel();
     super.dispose();
@@ -196,11 +183,7 @@ class _RecipeFormScreenState extends State<RecipeFormScreen> {
         .where((line) => line != null)
         .cast<DoseLine>()
         .toList(growable: false);
-
-    final mixOrder = _mixOrderControllers
-        .map((controller) => controller.text.trim())
-        .where((step) => step.isNotEmpty)
-        .toList(growable: false);
+    final mixOrder = _buildMixOrderFromDoseLines(doseLines);
 
     final baseRecipe = Recipe(
       id: widget.recipe?.id,
@@ -247,6 +230,27 @@ class _RecipeFormScreenState extends State<RecipeFormScreen> {
     }
   }
 
+  List<String> _buildMixOrderFromDoseLines(List<DoseLine> doseLines) {
+    return doseLines
+        .map((line) => line.productName.trim())
+        .where((step) => step.isNotEmpty)
+        .toList(growable: false);
+  }
+
+  void _moveDoseLine({required int from, required int to}) {
+    if (from == to ||
+        from < 0 ||
+        to < 0 ||
+        from >= _doseLineInputs.length ||
+        to >= _doseLineInputs.length) {
+      return;
+    }
+    setState(() {
+      final item = _doseLineInputs.removeAt(from);
+      _doseLineInputs.insert(to, item);
+    });
+  }
+
   void _showSnack(String message) {
     ScaffoldMessenger.of(
       context,
@@ -268,9 +272,21 @@ class _RecipeFormScreenState extends State<RecipeFormScreen> {
               children: [
                 TextFormField(
                   controller: _titleController,
-                  decoration: const InputDecoration(
+                  decoration: InputDecoration(
                     labelText: 'Titulo',
+                    hintText: 'Ej: 5ta. Aplicacion',
+                    floatingLabelBehavior: FloatingLabelBehavior.always,
+                    labelStyle: TextStyle(
+                      fontWeight: FontWeight.w600,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
                     border: OutlineInputBorder(),
+                    contentPadding: const EdgeInsets.fromLTRB(12, 18, 12, 14),
+                    floatingLabelStyle: TextStyle(
+                      height: 1.2,
+                      fontWeight: FontWeight.w700,
+                      color: Theme.of(context).colorScheme.primary,
+                    ),
                   ),
                   validator: _requiredValidator,
                 ),
@@ -307,8 +323,6 @@ class _RecipeFormScreenState extends State<RecipeFormScreen> {
                 ),
                 const SizedBox(height: 18),
                 _buildDoseLinesEditor(),
-                const SizedBox(height: 18),
-                _buildMixOrderEditor(),
                 const SizedBox(height: 12),
                 TextFormField(
                   controller: _warningsController,
@@ -381,7 +395,7 @@ class _RecipeFormScreenState extends State<RecipeFormScreen> {
               TextFormField(
                 controller: _stageController,
                 decoration: const InputDecoration(
-                    labelText: 'Estado fenológico',
+                  labelText: 'Estado fenológico',
                   border: OutlineInputBorder(),
                 ),
                 validator: _requiredValidator,
@@ -438,11 +452,23 @@ class _RecipeFormScreenState extends State<RecipeFormScreen> {
           ],
         ),
         const SizedBox(height: 6),
+        Text(
+          'El orden de los productos define el checklist / orden de carga.',
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
+        const SizedBox(height: 6),
         for (var index = 0; index < _doseLineInputs.length; index++) ...[
           _DoseLineEditorRow(
-            key: ValueKey('dose_$index'),
+            key: ObjectKey(_doseLineInputs[index]),
             input: _doseLineInputs[index],
+            lineNumber: index + 1,
             supplies: _supplies,
+            onMoveUp: index == 0
+                ? null
+                : () => _moveDoseLine(from: index, to: index - 1),
+            onMoveDown: index == _doseLineInputs.length - 1
+                ? null
+                : () => _moveDoseLine(from: index, to: index + 1),
             onRemove: _doseLineInputs.length == 1
                 ? null
                 : () {
@@ -450,87 +476,6 @@ class _RecipeFormScreenState extends State<RecipeFormScreen> {
                       _doseLineInputs.removeAt(index).dispose();
                     });
                   },
-          ),
-          const SizedBox(height: 8),
-        ],
-      ],
-    );
-  }
-
-  Widget _buildMixOrderEditor() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            Text(
-              'Checklist / orden de carga',
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
-            const Spacer(),
-            TextButton.icon(
-              onPressed: () => setState(
-                () => _mixOrderControllers.add(TextEditingController()),
-              ),
-              icon: const Icon(Icons.add),
-              label: const Text('Agregar paso'),
-            ),
-          ],
-        ),
-        const SizedBox(height: 6),
-        for (var index = 0; index < _mixOrderControllers.length; index++) ...[
-          LayoutBuilder(
-            builder: (context, constraints) {
-              final compact = constraints.maxWidth < 420;
-              if (compact) {
-                return Column(
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  children: [
-                    TextFormField(
-                      controller: _mixOrderControllers[index],
-                      decoration: InputDecoration(
-                        labelText: 'Paso ${index + 1}',
-                        border: const OutlineInputBorder(),
-                      ),
-                    ),
-                    IconButton(
-                      onPressed: _mixOrderControllers.length == 1
-                          ? null
-                          : () {
-                              setState(() {
-                                _mixOrderControllers.removeAt(index).dispose();
-                              });
-                            },
-                      icon: const Icon(Icons.delete_outline),
-                    ),
-                  ],
-                );
-              }
-              return Row(
-                children: [
-                  Expanded(
-                    child: TextFormField(
-                      controller: _mixOrderControllers[index],
-                      decoration: InputDecoration(
-                        labelText: 'Paso ${index + 1}',
-                        border: const OutlineInputBorder(),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  IconButton(
-                    onPressed: _mixOrderControllers.length == 1
-                        ? null
-                        : () {
-                            setState(() {
-                              _mixOrderControllers.removeAt(index).dispose();
-                            });
-                          },
-                    icon: const Icon(Icons.delete_outline),
-                  ),
-                ],
-              );
-            },
           ),
           const SizedBox(height: 8),
         ],
@@ -562,136 +507,147 @@ class _DoseLineEditorRow extends StatelessWidget {
   const _DoseLineEditorRow({
     super.key,
     required this.input,
+    required this.lineNumber,
     required this.supplies,
+    this.onMoveUp,
+    this.onMoveDown,
     this.onRemove,
   });
 
   final _DoseLineInput input;
+  final int lineNumber;
   final List<SupplyRegistryItem> supplies;
+  final VoidCallback? onMoveUp;
+  final VoidCallback? onMoveDown;
   final VoidCallback? onRemove;
 
   @override
   Widget build(BuildContext context) {
+    Widget buildProductField() {
+      return DropdownButtonFormField<String>(
+        initialValue: _resolveSelectedSupplyId(
+          input.selectedSupplyId,
+          supplies,
+        ),
+        decoration: const InputDecoration(border: OutlineInputBorder())
+            .copyWith(
+              labelText: 'Producto comercial $lineNumber',
+              border: OutlineInputBorder(),
+            ),
+        items: supplies
+            .where((item) => (item.id ?? '').isNotEmpty)
+            .map(
+              (item) => DropdownMenuItem<String>(
+                value: item.id!,
+                child: Text(item.commercialName),
+              ),
+            )
+            .toList(growable: false),
+        onChanged: supplies.isEmpty
+            ? null
+            : (value) {
+                final selected = _findSupply(value, supplies);
+                input.selectedSupplyId = selected?.id;
+                input.productName.text = selected?.commercialName ?? '';
+                input.activeIngredient.text = selected?.activeIngredient ?? '';
+                input.unit.text = _resolveSelectedUnit(selected?.unit ?? 'Lt.');
+              },
+      );
+    }
+
+    Widget buildActions() {
+      final canReorder = onMoveUp != null || onMoveDown != null;
+      if (!canReorder && onRemove == null) {
+        return const SizedBox.shrink();
+      }
+      return Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (canReorder)
+            IconButton(
+              tooltip: 'Subir',
+              onPressed: onMoveUp,
+              iconSize: 26,
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints.tightFor(width: 34, height: 34),
+              visualDensity: VisualDensity.compact,
+              icon: const Icon(Icons.arrow_upward),
+            ),
+          const SizedBox(width: 4),
+          if (canReorder)
+            IconButton(
+              tooltip: 'Bajar',
+              onPressed: onMoveDown,
+              iconSize: 26,
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints.tightFor(width: 34, height: 34),
+              visualDensity: VisualDensity.compact,
+              icon: const Icon(Icons.arrow_downward),
+            ),
+          const SizedBox(width: 4),
+          IconButton(
+            tooltip: 'Eliminar',
+            onPressed: onRemove,
+            iconSize: 26,
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints.tightFor(width: 34, height: 34),
+            visualDensity: VisualDensity.compact,
+            icon: const Icon(Icons.delete_outline),
+          ),
+        ],
+      );
+    }
+
     return Card(
       child: Padding(
-        padding: const EdgeInsets.all(10),
+        padding: const EdgeInsets.all(8),
         child: LayoutBuilder(
           builder: (context, constraints) {
-            final compact = constraints.maxWidth < 560;
+            final compact = constraints.maxWidth < 520;
             return Column(
               children: [
                 Row(
                   children: [
-                    Expanded(
-                      child: DropdownButtonFormField<String>(
-                        initialValue: _resolveSelectedSupplyId(
-                          input.selectedSupplyId,
-                          supplies,
-                        ),
-                        decoration: const InputDecoration(
-                          labelText: 'Producto comercial',
-                          border: OutlineInputBorder(),
-                        ),
-                        items: supplies
-                            .where((item) => (item.id ?? '').isNotEmpty)
-                            .map(
-                              (item) => DropdownMenuItem<String>(
-                                value: item.id!,
-                                child: Text(item.commercialName),
-                              ),
-                            )
-                            .toList(growable: false),
-                        onChanged: supplies.isEmpty
-                            ? null
-                            : (value) {
-                                final selected = _findSupply(value, supplies);
-                                input.selectedSupplyId = selected?.id;
-                                input.productName.text =
-                                    selected?.commercialName ?? '';
-                                input.activeIngredient.text =
-                                    selected?.activeIngredient ?? '';
-                                input.unit.text = _resolveSelectedUnit(
-                                  selected?.unit ?? 'Lt.',
-                                );
-                              },
-                      ),
-                    ),
-                    IconButton(
-                      onPressed: onRemove,
-                      icon: const Icon(Icons.delete_outline),
-                    ),
+                    Expanded(child: buildProductField()),
+                    const SizedBox(width: 8),
+                    buildActions(),
                   ],
                 ),
-                const SizedBox(height: 8),
-                if (compact) ...[
-                  TextFormField(
-                    controller: input.activeIngredient,
-                    readOnly: true,
-                    decoration: const InputDecoration(
-                      labelText: 'Principio activo',
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  TextFormField(
-                    controller: input.unit,
-                    readOnly: true,
-                    decoration: const InputDecoration(
-                      labelText: 'Unidad',
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  TextFormField(
-                    controller: input.dose,
-                    keyboardType: const TextInputType.numberWithOptions(
-                      decimal: true,
-                    ),
-                    decoration: const InputDecoration(
-                      labelText: 'Dosis',
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
-                ] else
-                  Row(
-                    children: [
-                      Expanded(
-                        child: TextFormField(
-                          controller: input.activeIngredient,
-                          readOnly: true,
-                          decoration: const InputDecoration(
-                            labelText: 'Principio activo',
-                            border: OutlineInputBorder(),
-                          ),
+                const SizedBox(height: 6),
+                Row(
+                  children: [
+                    SizedBox(
+                      width: compact ? 110 : 130,
+                      child: TextFormField(
+                        controller: input.unit,
+                        readOnly: true,
+                        decoration: const InputDecoration(
+                          labelText: 'Unidad',
+                          border: OutlineInputBorder(),
+                          isDense: true,
+                          contentPadding: EdgeInsets.fromLTRB(10, 12, 10, 10),
                         ),
                       ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: TextFormField(
-                          controller: input.unit,
-                          readOnly: true,
-                          decoration: const InputDecoration(
-                            labelText: 'Unidad',
-                            border: OutlineInputBorder(),
-                          ),
+                    ),
+                    const SizedBox(width: 8),
+                    SizedBox(
+                      width: compact ? 130 : 160,
+                      child: TextFormField(
+                        controller: input.dose,
+                        keyboardType: const TextInputType.numberWithOptions(
+                          decimal: true,
+                        ),
+                        decoration: const InputDecoration(
+                          labelText: 'Dosis',
+                          border: OutlineInputBorder(),
+                          isDense: true,
+                          contentPadding: EdgeInsets.fromLTRB(10, 12, 10, 10),
                         ),
                       ),
-                      const SizedBox(width: 8),
-                      SizedBox(
-                        width: 140,
-                        child: TextFormField(
-                          controller: input.dose,
-                          keyboardType: const TextInputType.numberWithOptions(
-                            decimal: true,
-                          ),
-                          decoration: const InputDecoration(
-                            labelText: 'Dosis',
-                            border: OutlineInputBorder(),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
+                    ),
+                    if (!compact) const Spacer(),
+                  ],
+                ),
               ],
             );
           },

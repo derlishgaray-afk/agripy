@@ -81,9 +81,7 @@ class RecetarioPdfService {
           pw.Wrap(
             spacing: 12,
             runSpacing: 4,
-            children: [
-              pw.Text('Operador: ${order.operatorName}'),
-            ],
+            children: [pw.Text('Operador: ${order.operatorName}')],
           ),
           pw.SizedBox(height: 2),
           pw.Wrap(
@@ -124,7 +122,10 @@ class RecetarioPdfService {
             children: [
               _inlineField('Campo', order.farmName),
               _inlineField('Lote', order.plotName, highlightValue: true),
-              _inlineField('Superficie', '${order.areaHa.toStringAsFixed(2)} ha'),
+              _inlineField(
+                'Superficie',
+                '${order.areaHa.toStringAsFixed(2)} ha',
+              ),
               _inlineField(
                 'Superficie afectada',
                 '${order.affectedAreaHa.toStringAsFixed(2)} ha',
@@ -247,9 +248,10 @@ class RecetarioPdfService {
   }
 
   pw.Widget _buildMixOrder(Recipe recipe) {
-    final linearOrder = recipe.mixOrder.isEmpty
+    final steps = _resolveMixOrderSteps(recipe);
+    final linearOrder = steps.isEmpty
         ? 'Sin pasos definidos.'
-        : recipe.mixOrder.map((step) => step.trim()).where((step) => step.isNotEmpty).join(' -> ');
+        : steps.join(' -> ');
 
     return pw.Column(
       crossAxisAlignment: pw.CrossAxisAlignment.start,
@@ -259,6 +261,20 @@ class RecetarioPdfService {
         pw.Text(linearOrder.isEmpty ? 'Sin pasos definidos.' : linearOrder),
       ],
     );
+  }
+
+  List<String> _resolveMixOrderSteps(Recipe recipe) {
+    final explicitSteps = recipe.mixOrder
+        .map((step) => step.trim())
+        .where((step) => step.isNotEmpty)
+        .toList(growable: false);
+    if (explicitSteps.isNotEmpty) {
+      return explicitSteps;
+    }
+    return recipe.doseLines
+        .map((line) => line.productName.trim())
+        .where((step) => step.isNotEmpty)
+        .toList(growable: false);
   }
 
   pw.Widget _inlineField(

@@ -38,7 +38,10 @@ class RecetarioRepo {
   Stream<List<Recipe>> watchRecipes({String? status}) {
     _assertModuleAccess();
     final normalizedStatus = status?.trim().toLowerCase();
-    Query<Map<String, dynamic>> query = TenantPath.recipesRef(_firestore, tenantId);
+    Query<Map<String, dynamic>> query = TenantPath.recipesRef(
+      _firestore,
+      tenantId,
+    );
     if (normalizedStatus == null || normalizedStatus.isEmpty) {
       query = query.orderBy('createdAt', descending: true);
     } else if (normalizedStatus == 'draft') {
@@ -114,7 +117,7 @@ class RecetarioRepo {
     required double areaHa,
     required double affectedAreaHa,
     required double tankCapacityLt,
-    DateTime? plannedDate,
+    required DateTime plannedDate,
     required String engineerName,
     required String operatorName,
     required String assignedToUid,
@@ -181,9 +184,10 @@ class RecetarioRepo {
 
   Future<RecipeEmissionData?> getLatestEmissionData(String recipeId) async {
     _assertModuleAccess();
-    final snapshot = await TenantPath.applicationOrdersRef(_firestore, tenantId)
-        .where('recipeId', isEqualTo: recipeId)
-        .get();
+    final snapshot = await TenantPath.applicationOrdersRef(
+      _firestore,
+      tenantId,
+    ).where('recipeId', isEqualTo: recipeId).get();
     if (snapshot.docs.isEmpty) {
       return null;
     }

@@ -36,6 +36,7 @@ class _EmitOrderScreenState extends State<EmitOrderScreen> {
   final _tankCapacityController = TextEditingController();
   final _responsibleController = TextEditingController();
   DateTime? _plannedDate;
+  bool _plannedDateRequiredError = false;
   bool _submitting = false;
 
   late final EmitRecetarioUsecase _usecase;
@@ -47,7 +48,8 @@ class _EmitOrderScreenState extends State<EmitOrderScreen> {
   List<FieldRegistryItem> _fields = const [];
   List<OperatorRegistryItem> _operators = const [];
   String? _selectedFieldId;
-  int? _selectedLotIndex;
+  final Set<int> _selectedLotIndexes = <int>{};
+  bool _lotsRequiredError = false;
   String? _selectedOperatorId;
   String? _preferredOperatorName;
 
@@ -83,7 +85,7 @@ class _EmitOrderScreenState extends State<EmitOrderScreen> {
       }
       setState(() {
         _fields = items;
-        _syncSelectedFieldAndLot();
+        _syncSelectedLots();
       });
     });
     _operatorsSub = _catalogRepo.watchOperators().listen((items) {
@@ -110,17 +112,17 @@ class _EmitOrderScreenState extends State<EmitOrderScreen> {
     super.dispose();
   }
 
-  void _syncSelectedFieldAndLot() {
+  void _syncSelectedLots() {
     final selectedField = _selectedField;
     if (selectedField == null) {
       _selectedFieldId = null;
-      _selectedLotIndex = null;
+      _selectedLotIndexes.clear();
       return;
     }
-    if (_selectedLotIndex != null &&
-        (_selectedLotIndex! < 0 || _selectedLotIndex! >= selectedField.lots.length)) {
-      _selectedLotIndex = null;
-    }
+    _selectedLotIndexes.removeWhere(
+      (index) => index < 0 || index >= selectedField.lots.length,
+    );
+    _syncAreaWithSelectedLots();
   }
 
   void _syncSelectedOperator() {
@@ -150,16 +152,19 @@ class _EmitOrderScreenState extends State<EmitOrderScreen> {
     return null;
   }
 
-  FieldLot? get _selectedLot {
+  List<FieldLot> get _selectedLots {
     final field = _selectedField;
     if (field == null) {
-      return null;
+      return const [];
     }
-    final index = _selectedLotIndex;
-    if (index == null || index < 0 || index >= field.lots.length) {
-      return null;
+    final sortedIndexes = _selectedLotIndexes.toList(growable: false)..sort();
+    final lots = <FieldLot>[];
+    for (final index in sortedIndexes) {
+      if (index >= 0 && index < field.lots.length) {
+        lots.add(field.lots[index]);
+      }
     }
-    return field.lots[index];
+    return List.unmodifiable(lots);
   }
 
   OperatorRegistryItem? get _selectedOperator {
@@ -177,9 +182,93 @@ class _EmitOrderScreenState extends State<EmitOrderScreen> {
     }
   }
 
+  void _syncAreaWithSelectedLots() {
+    final totalArea = _selectedLots.fold<double>(
+      0,
+      (total, lot) => total + lot.areaHa,
+    );
+    if (totalArea <= 0) {
+      _areaController.clear();
+      return;
+    }
+    _areaController.text = totalArea.toStringAsFixed(2);
+  }
+
+  Future<void> _pickLots() async {
+    final field = _selectedField;
+    if (field == null || field.lots.isEmpty) {
+      return;
+    }
+    final tempSelection = _selectedLotIndexes.toSet();
+    final accepted = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: const Text('Seleccionar lotes'),
+              content: SizedBox(
+                width: 420,
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      for (var index = 0; index < field.lots.length; index++)
+                        CheckboxListTile(
+                          dense: true,
+                          contentPadding: EdgeInsets.zero,
+                          title: Text(
+                            '${field.lots[index].name} (${field.lots[index].areaHa.toStringAsFixed(2)} ha)',
+                          ),
+                          value: tempSelection.contains(index),
+                          onChanged: (checked) {
+                            setDialogState(() {
+                              if (checked == true) {
+                                tempSelection.add(index);
+                              } else {
+                                tempSelection.remove(index);
+                              }
+                            });
+                          },
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(false),
+                  child: const Text('Cancelar'),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.of(context).pop(true),
+                  child: const Text('Aplicar'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+    if (accepted != true || !mounted) {
+      return;
+    }
+    setState(() {
+      _selectedLotIndexes
+        ..clear()
+        ..addAll(tempSelection);
+      _lotsRequiredError = _selectedLotIndexes.isEmpty;
+      _syncAreaWithSelectedLots();
+    });
+  }
+
   double get _calculatedTankCount {
-    final affectedAreaHa = parseFlexibleDouble(_affectedAreaController.text.trim());
-    final tankCapacityLt = parseFlexibleDouble(_tankCapacityController.text.trim());
+    final affectedAreaHa = parseFlexibleDouble(
+      _affectedAreaController.text.trim(),
+    );
+    final tankCapacityLt = parseFlexibleDouble(
+      _tankCapacityController.text.trim(),
+    );
     final waterVolumeLHa = widget.recipe.waterVolumeLHa;
     if (affectedAreaHa <= 0 || tankCapacityLt <= 0 || waterVolumeLHa <= 0) {
       return 0;
@@ -218,6 +307,7 @@ class _EmitOrderScreenState extends State<EmitOrderScreen> {
         time.hour,
         time.minute,
       );
+      _plannedDateRequiredError = false;
     });
   }
 
@@ -230,9 +320,30 @@ class _EmitOrderScreenState extends State<EmitOrderScreen> {
   }
 
   Future<void> _emitAndShare({required bool isPng}) async {
+    if (_selectedLots.isEmpty) {
+      setState(() {
+        _lotsRequiredError = true;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Selecciona al menos un lote.')),
+      );
+      return;
+    }
     if (!_formKey.currentState!.validate()) {
       return;
     }
+    if (_plannedDate == null) {
+      setState(() {
+        _plannedDateRequiredError = true;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Selecciona una fecha planificada.')),
+      );
+      return;
+    }
+    final plannedDate = _plannedDate!;
+    final selectedLots = _selectedLots;
+    final plotName = selectedLots.map((lot) => lot.name).join(', ');
 
     setState(() {
       _submitting = true;
@@ -244,13 +355,15 @@ class _EmitOrderScreenState extends State<EmitOrderScreen> {
           tenantName: widget.session.tenantName,
           recipe: widget.recipe,
           farmName: _selectedField!.name,
-          plotName: _selectedLot!.name,
+          plotName: plotName,
           areaHa: parseFlexibleDouble(_areaController.text.trim()),
           affectedAreaHa: parseFlexibleDouble(
             _affectedAreaController.text.trim(),
           ),
-          tankCapacityLt: parseFlexibleDouble(_tankCapacityController.text.trim()),
-          plannedDate: _plannedDate,
+          tankCapacityLt: parseFlexibleDouble(
+            _tankCapacityController.text.trim(),
+          ),
+          plannedDate: plannedDate,
           engineerName: _responsibleController.text.trim(),
           operatorName: _selectedOperator!.name,
           assignedToUid: widget.session.uid,
@@ -260,13 +373,15 @@ class _EmitOrderScreenState extends State<EmitOrderScreen> {
           tenantName: widget.session.tenantName,
           recipe: widget.recipe,
           farmName: _selectedField!.name,
-          plotName: _selectedLot!.name,
+          plotName: plotName,
           areaHa: parseFlexibleDouble(_areaController.text.trim()),
           affectedAreaHa: parseFlexibleDouble(
             _affectedAreaController.text.trim(),
           ),
-          tankCapacityLt: parseFlexibleDouble(_tankCapacityController.text.trim()),
-          plannedDate: _plannedDate,
+          tankCapacityLt: parseFlexibleDouble(
+            _tankCapacityController.text.trim(),
+          ),
+          plannedDate: plannedDate,
           engineerName: _responsibleController.text.trim(),
           operatorName: _selectedOperator!.name,
           assignedToUid: widget.session.uid,
@@ -303,6 +418,16 @@ class _EmitOrderScreenState extends State<EmitOrderScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final selectedField = _selectedField;
+    final selectedLots = _selectedLots;
+    final hasSelectedLots = selectedLots.isNotEmpty;
+    final selectedLotsSummary = hasSelectedLots
+        ? selectedLots
+              .map((lot) => '${lot.name} (${lot.areaHa.toStringAsFixed(2)} ha)')
+              .join(' | ')
+        : 'Sin lotes seleccionados.';
+    final hasPlannedDate = _plannedDate != null;
+    final plannedDateMissing = !hasPlannedDate && _plannedDateRequiredError;
     final plannedDateLabel = _plannedDate == null
         ? 'Sin fecha planificada'
         : DateFormat('dd/MM/yyyy HH:mm').format(_plannedDate!);
@@ -351,13 +476,14 @@ class _EmitOrderScreenState extends State<EmitOrderScreen> {
                 onChanged: _submitting || _fields.isEmpty
                     ? null
                     : (value) {
-                      setState(() {
-                        _selectedFieldId = value;
-                        _selectedLotIndex = null;
-                        _areaController.clear();
-                        _affectedAreaController.clear();
-                      });
-                    },
+                        setState(() {
+                          _selectedFieldId = value;
+                          _selectedLotIndexes.clear();
+                          _lotsRequiredError = false;
+                          _areaController.clear();
+                          _affectedAreaController.clear();
+                        });
+                      },
                 validator: (value) {
                   if ((value ?? '').trim().isEmpty) {
                     return 'Selecciona un campo';
@@ -366,48 +492,42 @@ class _EmitOrderScreenState extends State<EmitOrderScreen> {
                 },
               ),
               const SizedBox(height: 12),
-              DropdownButtonFormField<int>(
-                initialValue: _selectedLotIndex,
-                decoration: const InputDecoration(
-                  labelText: 'Lote',
-                  border: OutlineInputBorder(),
+              InputDecorator(
+                decoration: InputDecoration(
+                  labelText: 'Lotes',
+                  border: const OutlineInputBorder(),
+                  errorText: _lotsRequiredError
+                      ? 'Selecciona al menos un lote'
+                      : null,
                 ),
-                items: _selectedField == null
-                    ? const []
-                    : List.generate(_selectedField!.lots.length, (index) {
-                        final lot = _selectedField!.lots[index];
-                        return DropdownMenuItem<int>(
-                          value: index,
-                          child: Text(
-                            '${lot.name} (${lot.areaHa.toStringAsFixed(2)} ha)',
-                          ),
-                        );
-                      }),
-                onChanged: _submitting || _selectedField == null
-                    ? null
-                    : (value) {
-                        setState(() {
-                          _selectedLotIndex = value;
-                          final selectedLot = _selectedLot;
-                          if (selectedLot != null) {
-                            _areaController.text =
-                                selectedLot.areaHa.toStringAsFixed(2);
-                          }
-                        });
-                      },
-                validator: (_) {
-                  final field = _selectedField;
-                  if (field == null) {
-                    return 'Selecciona un campo primero';
-                  }
-                  if (field.lots.isEmpty) {
-                    return 'El campo no tiene lotes registrados';
-                  }
-                  if (_selectedLotIndex == null) {
-                    return 'Selecciona un lote';
-                  }
-                  return null;
-                },
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    OutlinedButton.icon(
+                      onPressed:
+                          _submitting ||
+                              selectedField == null ||
+                              selectedField.lots.isEmpty
+                          ? null
+                          : _pickLots,
+                      icon: const Icon(Icons.checklist_outlined),
+                      label: Text(
+                        selectedField == null
+                            ? 'Selecciona un campo primero'
+                            : selectedField.lots.isEmpty
+                            ? 'El campo no tiene lotes registrados'
+                            : hasSelectedLots
+                            ? '${selectedLots.length} lotes seleccionados'
+                            : 'Seleccionar lotes',
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      selectedLotsSummary,
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ],
+                ),
               ),
               const SizedBox(height: 12),
               TextFormField(
@@ -509,18 +629,40 @@ class _EmitOrderScreenState extends State<EmitOrderScreen> {
               const SizedBox(height: 12),
               OutlinedButton.icon(
                 onPressed: _submitting ? null : _pickPlannedDateTime,
+                style: plannedDateMissing
+                    ? OutlinedButton.styleFrom(
+                        side: BorderSide(
+                          color: Theme.of(context).colorScheme.error,
+                        ),
+                      )
+                    : null,
                 icon: const Icon(Icons.calendar_today_outlined),
-                label: Text('Fecha planificada: $plannedDateLabel'),
+                label: Text(
+                  hasPlannedDate
+                      ? 'Fecha planificada: $plannedDateLabel'
+                      : 'Fecha planificada (obligatoria): $plannedDateLabel',
+                ),
               ),
+              if (plannedDateMissing) ...[
+                const SizedBox(height: 6),
+                Text(
+                  'Campo obligatorio.',
+                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                ),
+              ],
               const SizedBox(height: 18),
               FilledButton.icon(
-                onPressed: _submitting ? null : _emitAndSharePdf,
+                onPressed: _submitting || !hasPlannedDate || !hasSelectedLots
+                    ? null
+                    : _emitAndSharePdf,
                 icon: const Icon(Icons.send_outlined),
                 label: const Text('Emitir y compartir PDF'),
               ),
               const SizedBox(height: 10),
               OutlinedButton.icon(
-                onPressed: _submitting ? null : _emitAndSharePng,
+                onPressed: _submitting || !hasPlannedDate || !hasSelectedLots
+                    ? null
+                    : _emitAndSharePng,
                 icon: const Icon(Icons.image_outlined),
                 label: const Text('Emitir y compartir PNG'),
               ),

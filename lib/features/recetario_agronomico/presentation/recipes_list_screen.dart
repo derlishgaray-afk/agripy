@@ -61,9 +61,9 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
   Future<void> _reshareAsPng(Recipe recipe) async {
     final recipeId = recipe.id;
     if (recipeId == null || recipeId.isEmpty) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Receta sin identificador.')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Receta sin identificador.')),
+      );
       return;
     }
 
@@ -125,6 +125,7 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
   Future<void> _viewEmittedRecipe(Recipe recipe) async {
     final recipeId = recipe.id;
     RecipeEmissionData? emission = recipe.lastEmission;
+    final mixOrderSteps = _resolveMixOrderSteps(recipe);
     if ((emission == null) && recipeId != null && recipeId.isNotEmpty) {
       emission = await _repo.getLatestEmissionData(recipeId);
     }
@@ -164,30 +165,28 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
                   if (recipe.doseLines.isEmpty)
                     const Text('- Sin lineas')
                   else
-                    ...recipe.doseLines.map(
-                      (line) {
-                        final perTank = emission == null
-                            ? 0.0
-                            : _calculatePerTankAmount(
-                                dosePerHa: line.dose,
-                                tankCapacityLt: emission.tankCapacityLt,
-                                waterVolumeLHa: recipe.waterVolumeLHa,
-                              );
-                        return Text(
-                          '- ${line.productName}: Unidad ${line.unit} | Dosis ${line.dose} | Por tanque ${perTank.toStringAsFixed(2)} ${line.unit}',
-                        );
-                      },
-                    ),
+                    ...recipe.doseLines.map((line) {
+                      final perTank = emission == null
+                          ? 0.0
+                          : _calculatePerTankAmount(
+                              dosePerHa: line.dose,
+                              tankCapacityLt: emission.tankCapacityLt,
+                              waterVolumeLHa: recipe.waterVolumeLHa,
+                            );
+                      return Text(
+                        '- ${line.productName}: Unidad ${line.unit} | Dosis ${line.dose} | Por tanque ${perTank.toStringAsFixed(2)} ${line.unit}',
+                      );
+                    }),
                   const SizedBox(height: 12),
                   Text(
                     'Checklist / orden de carga',
                     style: Theme.of(context).textTheme.titleSmall,
                   ),
                   const SizedBox(height: 4),
-                  if (recipe.mixOrder.isEmpty)
+                  if (mixOrderSteps.isEmpty)
                     const Text('- Sin pasos')
                   else
-                    ...recipe.mixOrder.map((step) => Text('* $step')),
+                    ...mixOrderSteps.map((step) => Text('* $step')),
                   const SizedBox(height: 12),
                   if (emission != null) ...[
                     Text(
@@ -199,15 +198,9 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
                     Text('Campo: ${emission.farmName}'),
                     Text('Lote: ${emission.plotName}'),
                     Text('Superficie: ${emission.areaHa} ha'),
-                    Text(
-                      'Superficie afectada: ${emission.affectedAreaHa} ha',
-                    ),
-                    Text(
-                      'Capacidad tanque: ${emission.tankCapacityLt} L',
-                    ),
-                    Text(
-                      'Cantidad de tanque: ${emission.tankCount}',
-                    ),
+                    Text('Superficie afectada: ${emission.affectedAreaHa} ha'),
+                    Text('Capacidad tanque: ${emission.tankCapacityLt} L'),
+                    Text('Cantidad de tanque: ${emission.tankCount}'),
                     Text('Responsable: ${emission.engineerName}'),
                     Text('Operador: ${emission.operatorName}'),
                     Text(
@@ -231,6 +224,162 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
         );
       },
     );
+  }
+
+  Future<void> _viewRequiredProducts(Recipe recipe) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final recipeId = recipe.id;
+    RecipeEmissionData? emission = recipe.lastEmission;
+    if ((emission == null) && recipeId != null && recipeId.isNotEmpty) {
+      emission = await _repo.getLatestEmissionData(recipeId);
+    }
+    if (!mounted) {
+      return;
+    }
+    if (emission == null) {
+      messenger.showSnackBar(
+        const SnackBar(content: Text('No hay datos de emision para calcular.')),
+      );
+      return;
+    }
+    final confirmedEmission = emission;
+
+    final affectedAreaHa = confirmedEmission.affectedAreaHa;
+    final lines = recipe.doseLines;
+    await showDialog<void>(
+      context: context,
+      builder: (context) {
+        var sharing = false;
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: const Text('Productos necesarios'),
+              content: SizedBox(
+                width: 560,
+                child: SingleChildScrollView(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text('Campo: ${confirmedEmission.farmName}'),
+                      const SizedBox(height: 4),
+                      Text('Lotes: ${confirmedEmission.plotName}'),
+                      const SizedBox(height: 4),
+                      Text(
+                        'Superficie afectada: ${affectedAreaHa.toStringAsFixed(2)} ha',
+                      ),
+                      const SizedBox(height: 10),
+                      if (lines.isEmpty)
+                        const Text('Sin lineas de mezcla.')
+                      else
+                        ...lines.map((line) {
+                          final totalRequired = _calculateTotalRequiredAmount(
+                            dosePerHa: line.dose,
+                            affectedAreaHa: affectedAreaHa,
+                          );
+                          final perTank = _calculatePerTankAmount(
+                            dosePerHa: line.dose,
+                            tankCapacityLt: confirmedEmission.tankCapacityLt,
+                            waterVolumeLHa: recipe.waterVolumeLHa,
+                          );
+                          return Padding(
+                            padding: const EdgeInsets.only(bottom: 8),
+                            child: Text(
+                              '- ${line.productName}: '
+                              '${totalRequired.toStringAsFixed(2)} ${line.unit} total '
+                              '(por tanque: ${perTank.toStringAsFixed(2)} ${line.unit})',
+                            ),
+                          );
+                        }),
+                    ],
+                  ),
+                ),
+              ),
+              actions: [
+                OutlinedButton.icon(
+                  onPressed: sharing
+                      ? null
+                      : () async {
+                          setDialogState(() {
+                            sharing = true;
+                          });
+                          try {
+                            await _shareRequiredProductsAsPng(
+                              recipe: recipe,
+                              emission: confirmedEmission,
+                            );
+                            if (!mounted) {
+                              return;
+                            }
+                            messenger.showSnackBar(
+                              const SnackBar(
+                                content: Text('PNG de productos compartido.'),
+                              ),
+                            );
+                          } catch (error) {
+                            if (!mounted) {
+                              return;
+                            }
+                            messenger.showSnackBar(
+                              SnackBar(
+                                content: Text(
+                                  'No se pudo compartir PNG de productos: $error',
+                                ),
+                              ),
+                            );
+                          } finally {
+                            if (context.mounted) {
+                              setDialogState(() {
+                                sharing = false;
+                              });
+                            }
+                          }
+                        },
+                  icon: sharing
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.share_outlined),
+                  label: const Text('Compartir PNG'),
+                ),
+                TextButton(
+                  onPressed: sharing ? null : () => Navigator.of(context).pop(),
+                  child: const Text('Cerrar'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Future<void> _shareRequiredProductsAsPng({
+    required Recipe recipe,
+    required RecipeEmissionData emission,
+  }) async {
+    final recipeId = recipe.id;
+    final fallbackCode = (recipeId == null || recipeId.isEmpty)
+        ? DateTime.now().millisecondsSinceEpoch.toString()
+        : recipeId;
+    final filenameCode = emission.code.trim().isEmpty
+        ? fallbackCode
+        : emission.code.trim();
+    final bytes = await _pngService.buildRequiredProductsPng(
+      tenantName: widget.session.tenantName,
+      recipe: recipe,
+      emission: emission,
+    );
+    final file = await _shareService.savePngTemp(
+      bytes,
+      'productos_necesarios_$filenameCode.png',
+    );
+    final message =
+        'Productos necesarios ${emission.code} - ${emission.plotName}. '
+        'Superficie afectada: ${emission.affectedAreaHa.toStringAsFixed(2)} ha.';
+    await _shareService.sharePng(file, message);
   }
 
   String _statusLabel(String status) {
@@ -259,6 +408,30 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
     return dosePerHa * (tankCapacityLt / waterVolumeLHa);
   }
 
+  double _calculateTotalRequiredAmount({
+    required double dosePerHa,
+    required double affectedAreaHa,
+  }) {
+    if (dosePerHa <= 0 || affectedAreaHa <= 0) {
+      return 0;
+    }
+    return dosePerHa * affectedAreaHa;
+  }
+
+  List<String> _resolveMixOrderSteps(Recipe recipe) {
+    final explicitSteps = recipe.mixOrder
+        .map((step) => step.trim())
+        .where((step) => step.isNotEmpty)
+        .toList(growable: false);
+    if (explicitSteps.isNotEmpty) {
+      return explicitSteps;
+    }
+    return recipe.doseLines
+        .map((line) => line.productName.trim())
+        .where((step) => step.isNotEmpty)
+        .toList(growable: false);
+  }
+
   @override
   Widget build(BuildContext context) {
     final compact = isCompactWidth(context);
@@ -274,18 +447,12 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
               onSelected: (value) => setState(() => _statusFilter = value),
               itemBuilder: (context) => const [
                 PopupMenuItem<String>(value: 'all', child: Text('Todos')),
-                PopupMenuItem<String>(
-                  value: 'draft',
-                  child: Text('Borrador'),
-                ),
+                PopupMenuItem<String>(value: 'draft', child: Text('Borrador')),
                 PopupMenuItem<String>(
                   value: 'published',
                   child: Text('Publicado'),
                 ),
-                PopupMenuItem<String>(
-                  value: 'emitted',
-                  child: Text('Emitido'),
-                ),
+                PopupMenuItem<String>(value: 'emitted', child: Text('Emitido')),
               ],
             )
           else
@@ -409,16 +576,34 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
                                 icon: const Icon(Icons.visibility_outlined),
                                 label: const Text('Ver'),
                               ),
+                            if (isEmitted)
+                              OutlinedButton.icon(
+                                onPressed: () => _viewRequiredProducts(recipe),
+                                icon: const Icon(Icons.calculate_outlined),
+                                label: const Text('Productos'),
+                              ),
                             if (_canEmit && isEmitted)
-                              FilledButton.icon(
-                                onPressed: _sharingRecipeId == recipe.id
-                                    ? null
-                                    : () => _reshareAsPng(recipe),
-                                icon: const Icon(Icons.image_outlined),
-                                label: Text(
-                                  _sharingRecipeId == recipe.id
-                                      ? 'Compartiendo...'
-                                      : 'Volver a compartir PNG',
+                              Tooltip(
+                                message: 'Volver a compartir PNG',
+                                child: FilledButton(
+                                  onPressed: _sharingRecipeId == recipe.id
+                                      ? null
+                                      : () => _reshareAsPng(recipe),
+                                  style: FilledButton.styleFrom(
+                                    minimumSize: const Size(46, 40),
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 12,
+                                    ),
+                                  ),
+                                  child: _sharingRecipeId == recipe.id
+                                      ? const SizedBox(
+                                          width: 18,
+                                          height: 18,
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 2.2,
+                                          ),
+                                        )
+                                      : const Icon(Icons.share_outlined),
                                 ),
                               ),
                           ],
