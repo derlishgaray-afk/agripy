@@ -23,6 +23,7 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
   final RecetarioPngService _pngService = RecetarioPngService();
   final RecetarioShareService _shareService = RecetarioShareService();
   String _statusFilter = 'all';
+  String _emittedStateFilter = 'all';
   String? _sharingRecipeId;
 
   @override
@@ -384,6 +385,12 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
 
   String _statusLabel(String status) {
     final normalized = status.trim().toLowerCase();
+    if (normalized == 'annulled' || normalized == 'anulado') {
+      return 'Anulado';
+    }
+    if (normalized == 'completed' || normalized == 'completado') {
+      return 'Completado';
+    }
     if (normalized == 'emitted') {
       return 'Emitido';
     }
@@ -391,6 +398,219 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
       return 'Publicado';
     }
     return 'Borrador';
+  }
+
+  String _emittedStateFilterLabel(String value) {
+    switch (value) {
+      case 'pending':
+        return 'Pendiente';
+      case 'completed':
+        return 'Completado';
+      case 'annulled':
+        return 'Anulado';
+      default:
+        return 'Todos';
+    }
+  }
+
+  String _orderStateKey(ApplicationOrder? order) {
+    if (order == null) {
+      return 'pending';
+    }
+    final raw = order.status.trim().toLowerCase();
+    if (raw == 'annulled' || raw == 'anulado' || raw == 'cancelled') {
+      return 'annulled';
+    }
+    if (raw == 'completed' || order.execution.done) {
+      return 'completed';
+    }
+    return 'pending';
+  }
+
+  String _orderStateLabel(ApplicationOrder? order) {
+    final key = _orderStateKey(order);
+    if (key == 'completed') {
+      return 'Completado';
+    }
+    if (key == 'annulled') {
+      return 'Anulado';
+    }
+    return 'Emitido';
+  }
+
+  String _orderStateDetail(ApplicationOrder? order) {
+    final key = _orderStateKey(order);
+    if (key == 'completed') {
+      final doneAt = order?.execution.doneAt;
+      if (doneAt == null) {
+        return 'Actualizacion: Completado';
+      }
+      return 'Actualizacion: Completado el ${_formatDateTime(doneAt)}';
+    }
+    if (key == 'annulled') {
+      return 'Actualizacion: Anulado';
+    }
+    return 'Actualizacion: Pendiente';
+  }
+
+  Future<DateTime?> _pickCompletionDateTime({DateTime? initialDateTime}) async {
+    final now = DateTime.now();
+    final initial = initialDateTime ?? now;
+    final pickedDate = await showDatePicker(
+      context: context,
+      firstDate: DateTime(now.year - 5),
+      lastDate: DateTime(now.year + 3),
+      initialDate: initial,
+    );
+    if (pickedDate == null || !mounted) {
+      return null;
+    }
+    final pickedTime = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay.fromDateTime(initial),
+    );
+    if (pickedTime == null) {
+      return null;
+    }
+    return DateTime(
+      pickedDate.year,
+      pickedDate.month,
+      pickedDate.day,
+      pickedTime.hour,
+      pickedTime.minute,
+    );
+  }
+
+  Future<void> _showEmissionUpdateDialog({
+    required Recipe recipe,
+    required ApplicationOrder order,
+  }) async {
+    final orderId = order.id;
+    if (orderId == null || orderId.isEmpty) {
+      _showSnack('No se pudo actualizar: orden sin identificador.');
+      return;
+    }
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        var submitting = false;
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: const Text('Actualizacion de emitido'),
+              content: Text(
+                'Recetario: ${recipe.title}\nCodigo: ${order.code}\nEstado actual: ${_orderStateLabel(order)}',
+              ),
+              actions: [
+                TextButton(
+                  onPressed: submitting
+                      ? null
+                      : () => Navigator.of(dialogContext).pop(),
+                  child: const Text('Cerrar'),
+                ),
+                OutlinedButton(
+                  onPressed: submitting
+                      ? null
+                      : () async {
+                          final doneAt = await _pickCompletionDateTime(
+                            initialDateTime:
+                                order.execution.doneAt ?? DateTime.now(),
+                          );
+                          if (doneAt == null) {
+                            return;
+                          }
+                          setDialogState(() {
+                            submitting = true;
+                          });
+                          try {
+                            await _repo.markOrderCompleted(
+                              orderId: orderId,
+                              completedAt: doneAt,
+                            );
+                            if (!mounted || !dialogContext.mounted) {
+                              return;
+                            }
+                            Navigator.of(dialogContext).pop();
+                            _showSnack('Emitido actualizado a completado.');
+                          } catch (error) {
+                            if (!mounted) {
+                              return;
+                            }
+                            _showSnack('No se pudo actualizar: $error');
+                            setDialogState(() {
+                              submitting = false;
+                            });
+                          }
+                        },
+                  child: const Text('Completado'),
+                ),
+                FilledButton(
+                  onPressed: submitting
+                      ? null
+                      : () async {
+                          final confirm = await showDialog<bool>(
+                            context: context,
+                            builder: (context) {
+                              return AlertDialog(
+                                title: const Text('Anular emitido'),
+                                content: const Text(
+                                  'Esta accion marcara el emitido como anulado.',
+                                ),
+                                actions: [
+                                  TextButton(
+                                    onPressed: () =>
+                                        Navigator.of(context).pop(false),
+                                    child: const Text('Cancelar'),
+                                  ),
+                                  FilledButton(
+                                    onPressed: () =>
+                                        Navigator.of(context).pop(true),
+                                    child: const Text('Anular'),
+                                  ),
+                                ],
+                              );
+                            },
+                          );
+                          if (confirm != true) {
+                            return;
+                          }
+                          setDialogState(() {
+                            submitting = true;
+                          });
+                          try {
+                            await _repo.markOrderAnnulled(orderId: orderId);
+                            if (!mounted || !dialogContext.mounted) {
+                              return;
+                            }
+                            Navigator.of(dialogContext).pop();
+                            _showSnack('Emitido actualizado a anulado.');
+                          } catch (error) {
+                            if (!mounted) {
+                              return;
+                            }
+                            _showSnack('No se pudo anular: $error');
+                            setDialogState(() {
+                              submitting = false;
+                            });
+                          }
+                        },
+                  child: const Text('Anular'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  void _showSnack(String message) {
+    if (!mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 
   String _formatDateTime(DateTime dateTime) {
@@ -482,6 +702,64 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
                 ],
               ),
             ),
+          if (_statusFilter == 'emitted')
+            if (compact)
+              PopupMenuButton<String>(
+                tooltip:
+                    'Filtrar emitidos: ${_emittedStateFilterLabel(_emittedStateFilter)}',
+                initialValue: _emittedStateFilter,
+                icon: const Icon(Icons.fact_check_outlined),
+                onSelected: (value) =>
+                    setState(() => _emittedStateFilter = value),
+                itemBuilder: (context) => [
+                  const PopupMenuItem<String>(
+                    value: 'all',
+                    child: Text('Todos'),
+                  ),
+                  const PopupMenuItem<String>(
+                    value: 'pending',
+                    child: Text('Pendiente'),
+                  ),
+                  const PopupMenuItem<String>(
+                    value: 'completed',
+                    child: Text('Completado'),
+                  ),
+                  const PopupMenuItem<String>(
+                    value: 'annulled',
+                    child: Text('Anulado'),
+                  ),
+                ],
+              )
+            else
+              DropdownButtonHideUnderline(
+                child: DropdownButton<String>(
+                  value: _emittedStateFilter,
+                  onChanged: (value) {
+                    if (value == null) {
+                      return;
+                    }
+                    setState(() => _emittedStateFilter = value);
+                  },
+                  items: const [
+                    DropdownMenuItem<String>(
+                      value: 'all',
+                      child: Text('Todos'),
+                    ),
+                    DropdownMenuItem<String>(
+                      value: 'pending',
+                      child: Text('Pendiente'),
+                    ),
+                    DropdownMenuItem<String>(
+                      value: 'completed',
+                      child: Text('Completado'),
+                    ),
+                    DropdownMenuItem<String>(
+                      value: 'annulled',
+                      child: Text('Anulado'),
+                    ),
+                  ],
+                ),
+              ),
           const SizedBox(width: 8),
         ],
       ),
@@ -506,114 +784,175 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
             return const Center(child: Text('Sin recetas cargadas.'));
           }
 
-          return ResponsivePage(
-            child: ListView.separated(
-              padding: const EdgeInsets.only(bottom: 90),
-              itemCount: recipes.length,
-              separatorBuilder: (context, index) => const SizedBox(height: 8),
-              itemBuilder: (context, index) {
-                final recipe = recipes[index];
-                final normalizedStatus = recipe.status.trim().toLowerCase();
-                final isEmitted = normalizedStatus == 'emitted';
-                final isPublished = normalizedStatus == 'published';
-                final emission = recipe.lastEmission;
-                return Card(
-                  child: Padding(
-                    padding: const EdgeInsets.all(12),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          children: [
-                            Expanded(
-                              child: Text(
-                                recipe.title,
-                                style: Theme.of(context).textTheme.titleMedium,
-                              ),
-                            ),
-                            _StatusChip(status: recipe.status),
-                          ],
-                        ),
-                        const SizedBox(height: 6),
-                        if (isEmitted) ...[
-                          Text(
-                            'Fecha de emisión: ${emission == null ? "No definida" : _formatDateTime(emission.issuedAt)}',
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            'Campo: ${emission?.farmName ?? "-"}    Lote: ${emission?.plotName ?? "-"}',
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            'Fecha planificada: ${emission?.plannedDate == null ? "No definida" : _formatDateTime(emission!.plannedDate!)}',
-                          ),
-                        ] else ...[
-                          Text('Cultivo: ${recipe.crop} - ${recipe.stage}'),
-                          const SizedBox(height: 4),
-                          Text('Objetivo: ${recipe.objective}'),
-                        ],
-                        const SizedBox(height: 10),
-                        Wrap(
-                          spacing: 8,
-                          runSpacing: 8,
-                          children: [
-                            if (_canEdit && !isEmitted)
-                              OutlinedButton.icon(
-                                onPressed: () =>
-                                    _openRecipeForm(recipe: recipe),
-                                icon: const Icon(Icons.edit_outlined),
-                                label: const Text('Editar'),
-                              ),
-                            if (_canEmit && isPublished)
-                              FilledButton.icon(
-                                onPressed: () => _openEmit(recipe),
-                                icon: const Icon(Icons.send_outlined),
-                                label: const Text('Emitir recetario'),
-                              ),
-                            if (isEmitted)
-                              OutlinedButton.icon(
-                                onPressed: () => _viewEmittedRecipe(recipe),
-                                icon: const Icon(Icons.visibility_outlined),
-                                label: const Text('Ver'),
-                              ),
-                            if (isEmitted)
-                              OutlinedButton.icon(
-                                onPressed: () => _viewRequiredProducts(recipe),
-                                icon: const Icon(Icons.calculate_outlined),
-                                label: const Text('Productos'),
-                              ),
-                            if (_canEmit && isEmitted)
-                              Tooltip(
-                                message: 'Volver a compartir PNG',
-                                child: FilledButton(
-                                  onPressed: _sharingRecipeId == recipe.id
-                                      ? null
-                                      : () => _reshareAsPng(recipe),
-                                  style: FilledButton.styleFrom(
-                                    minimumSize: const Size(46, 40),
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 12,
-                                    ),
-                                  ),
-                                  child: _sharingRecipeId == recipe.id
-                                      ? const SizedBox(
-                                          width: 18,
-                                          height: 18,
-                                          child: CircularProgressIndicator(
-                                            strokeWidth: 2.2,
-                                          ),
-                                        )
-                                      : const Icon(Icons.share_outlined),
-                                ),
-                              ),
-                          ],
-                        ),
-                      ],
-                    ),
+          return StreamBuilder<List<ApplicationOrder>>(
+            stream: _repo.watchApplicationOrders(),
+            builder: (context, ordersSnapshot) {
+              if (ordersSnapshot.hasError) {
+                return Center(child: Text('Error: ${ordersSnapshot.error}'));
+              }
+              final orderByRecipeId = <String, ApplicationOrder>{};
+              if (ordersSnapshot.hasData) {
+                for (final order in ordersSnapshot.data!) {
+                  final recipeId = order.recipeId.trim();
+                  if (recipeId.isEmpty ||
+                      orderByRecipeId.containsKey(recipeId)) {
+                    continue;
+                  }
+                  orderByRecipeId[recipeId] = order;
+                }
+              }
+              final filteredRecipes =
+                  _statusFilter == 'emitted' && _emittedStateFilter != 'all'
+                  ? recipes
+                        .where((recipe) {
+                          final recipeId = recipe.id;
+                          if (recipeId == null || recipeId.isEmpty) {
+                            return false;
+                          }
+                          final order = orderByRecipeId[recipeId];
+                          return _orderStateKey(order) == _emittedStateFilter;
+                        })
+                        .toList(growable: false)
+                  : recipes;
+              if (filteredRecipes.isEmpty) {
+                return Center(
+                  child: Text(
+                    'Sin emitidos en estado ${_emittedStateFilterLabel(_emittedStateFilter).toLowerCase()}.',
                   ),
                 );
-              },
-            ),
+              }
+              return ResponsivePage(
+                child: ListView.separated(
+                  padding: const EdgeInsets.only(bottom: 90),
+                  itemCount: filteredRecipes.length,
+                  separatorBuilder: (context, index) =>
+                      const SizedBox(height: 8),
+                  itemBuilder: (context, index) {
+                    final recipe = filteredRecipes[index];
+                    final normalizedStatus = recipe.status.trim().toLowerCase();
+                    final isEmitted = normalizedStatus == 'emitted';
+                    final isPublished = normalizedStatus == 'published';
+                    final emission = recipe.lastEmission;
+                    final order = isEmitted && recipe.id != null
+                        ? orderByRecipeId[recipe.id!]
+                        : null;
+                    return Card(
+                      child: Padding(
+                        padding: const EdgeInsets.all(12),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    recipe.title,
+                                    style: Theme.of(
+                                      context,
+                                    ).textTheme.titleMedium,
+                                  ),
+                                ),
+                                _StatusChip(
+                                  status: isEmitted
+                                      ? _orderStateLabel(order)
+                                      : _statusLabel(recipe.status),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 6),
+                            if (isEmitted) ...[
+                              Text(
+                                'Fecha de emisión: ${emission == null ? "No definida" : _formatDateTime(emission.issuedAt)}',
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                'Campo: ${emission?.farmName ?? "-"}    Lote: ${emission?.plotName ?? "-"}',
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                'Fecha planificada: ${emission?.plannedDate == null ? "No definida" : _formatDateTime(emission!.plannedDate!)}',
+                              ),
+                              const SizedBox(height: 4),
+                              Text(_orderStateDetail(order)),
+                            ] else ...[
+                              Text('Cultivo: ${recipe.crop} - ${recipe.stage}'),
+                              const SizedBox(height: 4),
+                              Text('Objetivo: ${recipe.objective}'),
+                            ],
+                            const SizedBox(height: 10),
+                            Wrap(
+                              spacing: 8,
+                              runSpacing: 8,
+                              children: [
+                                if (_canEdit && !isEmitted)
+                                  OutlinedButton.icon(
+                                    onPressed: () =>
+                                        _openRecipeForm(recipe: recipe),
+                                    icon: const Icon(Icons.edit_outlined),
+                                    label: const Text('Editar'),
+                                  ),
+                                if (_canEmit && isPublished)
+                                  FilledButton.icon(
+                                    onPressed: () => _openEmit(recipe),
+                                    icon: const Icon(Icons.send_outlined),
+                                    label: const Text('Emitir recetario'),
+                                  ),
+                                if (isEmitted)
+                                  OutlinedButton.icon(
+                                    onPressed: () => _viewEmittedRecipe(recipe),
+                                    icon: const Icon(Icons.visibility_outlined),
+                                    label: const Text('Ver'),
+                                  ),
+                                if (isEmitted)
+                                  OutlinedButton.icon(
+                                    onPressed: () =>
+                                        _viewRequiredProducts(recipe),
+                                    icon: const Icon(Icons.calculate_outlined),
+                                    label: const Text('Productos'),
+                                  ),
+                                if (_canEmit && isEmitted && order != null)
+                                  OutlinedButton.icon(
+                                    onPressed: () => _showEmissionUpdateDialog(
+                                      recipe: recipe,
+                                      order: order,
+                                    ),
+                                    icon: const Icon(Icons.event_note_outlined),
+                                    label: const Text('Actualizar'),
+                                  ),
+                                if (_canEmit && isEmitted)
+                                  Tooltip(
+                                    message: 'Volver a compartir PNG',
+                                    child: FilledButton(
+                                      onPressed: _sharingRecipeId == recipe.id
+                                          ? null
+                                          : () => _reshareAsPng(recipe),
+                                      style: FilledButton.styleFrom(
+                                        minimumSize: const Size(46, 40),
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 12,
+                                        ),
+                                      ),
+                                      child: _sharingRecipeId == recipe.id
+                                          ? const SizedBox(
+                                              width: 18,
+                                              height: 18,
+                                              child: CircularProgressIndicator(
+                                                strokeWidth: 2.2,
+                                              ),
+                                            )
+                                          : const Icon(Icons.share_outlined),
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              );
+            },
           );
         },
       ),
@@ -629,17 +968,30 @@ class _StatusChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final normalized = status.trim().toLowerCase();
-    final isPublished = normalized == 'published';
-    final isEmitted = normalized == 'emitted';
+    final isAnnulled =
+        normalized == 'annulled' ||
+        normalized == 'anulado' ||
+        normalized == 'cancelled';
+    final isCompleted = normalized == 'completed' || normalized == 'completado';
+    final isPublished = normalized == 'published' || normalized == 'publicado';
+    final isEmitted = normalized == 'emitted' || normalized == 'emitido';
     return Chip(
       label: Text(
-        isEmitted
+        isAnnulled
+            ? 'Anulado'
+            : isCompleted
+            ? 'Completado'
+            : isEmitted
             ? 'Emitido'
             : isPublished
             ? 'Publicado'
             : 'Borrador',
       ),
-      backgroundColor: isEmitted
+      backgroundColor: isAnnulled
+          ? Colors.red.shade100
+          : isCompleted
+          ? Colors.teal.shade100
+          : isEmitted
           ? Colors.blue.shade100
           : isPublished
           ? Colors.green.shade100

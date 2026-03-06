@@ -31,6 +31,10 @@ class RecetarioShareService {
     return _saveTemp(bytes: bytes, filename: filename, mimeType: 'image/png');
   }
 
+  Future<XFile> saveCsvTemp(Uint8List bytes, String filename) async {
+    return _saveTemp(bytes: bytes, filename: filename, mimeType: 'text/csv');
+  }
+
   Future<XFile> _saveTemp({
     required Uint8List bytes,
     required String filename,
@@ -63,9 +67,11 @@ class RecetarioShareService {
     await _share(file, text);
   }
 
+  Future<void> shareCsv(XFile file, String text) async {
+    await _share(file, text);
+  }
+
   Future<void> _share(XFile file, String text) async {
-    await SharePlus.instance.share(
-      ShareParams(text: text, files: [file]),
-    );
+    await SharePlus.instance.share(ShareParams(text: text, files: [file]));
   }
 }

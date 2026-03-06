@@ -210,4 +210,50 @@ class RecetarioRepo {
           .toList(growable: false);
     });
   }
+
+  Stream<List<ApplicationOrder>> watchApplicationOrders() {
+    _assertModuleAccess();
+    final query = TenantPath.applicationOrdersRef(
+      _firestore,
+      tenantId,
+    ).orderBy('issuedAt', descending: true);
+    return query.snapshots().map((snapshot) {
+      return snapshot.docs
+          .map((doc) => ApplicationOrder.fromMap(doc.data(), id: doc.id))
+          .toList(growable: false);
+    });
+  }
+
+  Future<void> markOrderCompleted({
+    required String orderId,
+    required DateTime completedAt,
+  }) async {
+    _assertWriteAccess();
+    if (orderId.trim().isEmpty) {
+      throw StateError('Orden sin id.');
+    }
+    await TenantPath.applicationOrderRef(_firestore, tenantId, orderId).update({
+      'status': 'completed',
+      'execution.done': true,
+      'execution.doneAt': Timestamp.fromDate(completedAt),
+      'execution.operatorUid': currentUid,
+      'updatedBy': currentUid,
+      'updatedAt': Timestamp.now(),
+    });
+  }
+
+  Future<void> markOrderAnnulled({required String orderId}) async {
+    _assertWriteAccess();
+    if (orderId.trim().isEmpty) {
+      throw StateError('Orden sin id.');
+    }
+    await TenantPath.applicationOrderRef(_firestore, tenantId, orderId).update({
+      'status': 'annulled',
+      'execution.done': false,
+      'execution.doneAt': FieldValue.delete(),
+      'execution.operatorUid': FieldValue.delete(),
+      'updatedBy': currentUid,
+      'updatedAt': Timestamp.now(),
+    });
+  }
 }

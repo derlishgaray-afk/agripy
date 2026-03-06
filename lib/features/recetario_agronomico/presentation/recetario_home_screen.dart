@@ -47,6 +47,13 @@ class RecetarioHomeScreen extends StatelessWidget {
               onTap: () =>
                   Navigator.of(context).pushNamed(AppRoutes.operatorRegistry),
             ),
+            const SizedBox(height: 10),
+            _ModuleCard(
+              icon: Icons.assessment_outlined,
+              title: 'Informes',
+              subtitle: 'Resumen y seguimiento de aplicaciones',
+              onTap: () => Navigator.of(context).pushNamed(AppRoutes.reports),
+            ),
           ],
         ),
       ),

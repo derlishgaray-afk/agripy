@@ -17,6 +17,7 @@ import '../features/recetario_agronomico/presentation/fields_registry_screen.dar
 import '../features/recetario_agronomico/presentation/inputs_registry_screen.dart';
 import '../features/recetario_agronomico/presentation/operators_registry_screen.dart';
 import '../features/recetario_agronomico/presentation/recetario_home_screen.dart';
+import '../features/recetario_agronomico/presentation/reports_screen.dart';
 import '../features/recetario_agronomico/presentation/recipe_form_screen.dart';
 import '../features/recetario_agronomico/presentation/recipes_list_screen.dart';
 import '../features/super_admin/domain/models.dart';
@@ -42,6 +43,7 @@ class AppRoutes {
   static const String fieldRegistry = '/field-registry';
   static const String inputRegistry = '/input-registry';
   static const String operatorRegistry = '/operator-registry';
+  static const String reports = '/reports';
 
   static const String superAdminHome = '/super-admin';
   static const String superAdminTenants = '/super-admin/tenants';
@@ -399,6 +401,11 @@ class AppRouter {
         return _recetarioGuardRoute(
           settings: settings,
           builder: (session) => OperatorsRegistryScreen(session: session),
+        );
+      case AppRoutes.reports:
+        return _recetarioGuardRoute(
+          settings: settings,
+          builder: (session) => ReportsScreen(session: session),
         );
       case AppRoutes.superAdminHome:
         return _superAdminGuardRoute(
