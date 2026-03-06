@@ -131,6 +131,8 @@ class SessionController extends ChangeNotifier {
       return;
     }
 
+    unawaited(_upsertEmailIndexForUser(user));
+
     isLoading = true;
     _clearSession();
     notifyListeners();
@@ -322,6 +324,55 @@ class SessionController extends ChangeNotifier {
 
   Future<void> sendPasswordResetEmail({required String email}) async {
     await _auth.sendPasswordResetEmail(email: email);
+  }
+
+  Future<bool> isEmailRegisteredInFirestore({required String email}) async {
+    final emailLower = email.trim().toLowerCase();
+    if (emailLower.isEmpty) {
+      return false;
+    }
+
+    try {
+      final snapshot = await _firestore
+          .collection('auth_email_index')
+          .doc(emailLower)
+          .get();
+      if (snapshot.exists) {
+        return true;
+      }
+      return _isEmailRegisteredInAuth(email);
+    } on FirebaseException catch (error) {
+      if (error.code != 'permission-denied') {
+        rethrow;
+      }
+
+      // Fallback para entornos donde las reglas de Firestore aun no permiten
+      // leer auth_email_index desde la pantalla de login.
+      return _isEmailRegisteredInAuth(email);
+    }
+  }
+
+  Future<bool> _isEmailRegisteredInAuth(String email) async {
+    // ignore: deprecated_member_use
+    final methods = await _auth.fetchSignInMethodsForEmail(email);
+    return methods.isNotEmpty;
+  }
+
+  Future<void> _upsertEmailIndexForUser(User user) async {
+    final email = user.email?.trim();
+    if (email == null || email.isEmpty) {
+      return;
+    }
+
+    final emailLower = email.toLowerCase();
+    try {
+      await _firestore.collection('auth_email_index').doc(emailLower).set({
+        'uid': user.uid,
+        'email': email,
+        'emailLower': emailLower,
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+    } catch (_) {}
   }
 
   Future<void> refreshSession() async {
@@ -765,6 +816,18 @@ class _LoginScreenState extends State<LoginScreen> {
     });
 
     try {
+      final isRegistered = await widget.sessionController
+          .isEmailRegisteredInFirestore(email: email);
+      if (!isRegistered) {
+        if (!mounted) {
+          return;
+        }
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No existe una cuenta con ese email.')),
+        );
+        return;
+      }
+
       await widget.sessionController.sendPasswordResetEmail(email: email);
       if (!mounted) {
         return;
@@ -872,6 +935,9 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   String _friendlyResetError(Object error) {
+    if (error is FirebaseException && error.code == 'permission-denied') {
+      return 'No se pudo verificar el email por permisos de Firestore.';
+    }
     if (error is FirebaseAuthException) {
       switch (error.code) {
         case 'invalid-email':
@@ -972,16 +1038,6 @@ class _LoginScreenState extends State<LoginScreen> {
                           ? null
                           : () => _submit(createAccount: false),
                       child: const Text('Ingresar'),
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  SizedBox(
-                    width: double.infinity,
-                    child: OutlinedButton(
-                      onPressed: _loading
-                          ? null
-                          : () => _submit(createAccount: true),
-                      child: const Text('Crear cuenta'),
                     ),
                   ),
                   const SizedBox(height: 8),

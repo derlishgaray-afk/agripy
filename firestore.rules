@@ -162,6 +162,16 @@ service cloud.firestore {
       allow create, update, delete: if isSuperAdmin();
     }
 
+    match /auth_email_index/{emailLower} {
+      allow get: if true;
+      allow list: if false;
+      allow create, update: if isSignedIn() &&
+        request.resource.data.uid == uid() &&
+        request.resource.data.email == authEmail() &&
+        request.resource.data.emailLower == emailLower;
+      allow delete: if isSuperAdmin();
+    }
+
     match /tenant_user_invites/{inviteCode} {
       allow read: if isSuperAdmin() || inviteReadableByUser(inviteCode);
       allow create, delete: if isSuperAdmin();
