@@ -64,6 +64,7 @@ class _TenantUsersScreenState extends State<TenantUsersScreen> {
         }
 
         final modules = tenant.modules.map(AppModules.labelOf).join(', ');
+        final colorScheme = Theme.of(context).colorScheme;
 
         return Scaffold(
           appBar: AppBar(title: Text('Usuarios - ${tenant.name}')),
@@ -79,10 +80,14 @@ class _TenantUsersScreenState extends State<TenantUsersScreen> {
                 if (tenant.status == TenantStatus.suspended)
                   Container(
                     width: double.infinity,
-                    color: Colors.orange.shade100,
+                    decoration: BoxDecoration(
+                      color: colorScheme.errorContainer,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
                     padding: const EdgeInsets.all(10),
-                    child: const Text(
+                    child: Text(
                       'Tenant suspendido: los usuarios quedaran bloqueados en login.',
+                      style: TextStyle(color: colorScheme.onErrorContainer),
                     ),
                   ),
                 Padding(

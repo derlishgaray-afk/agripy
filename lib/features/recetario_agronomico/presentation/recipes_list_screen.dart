@@ -967,6 +967,7 @@ class _StatusChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
     final normalized = status.trim().toLowerCase();
     final isAnnulled =
         normalized == 'annulled' ||
@@ -975,6 +976,24 @@ class _StatusChip extends StatelessWidget {
     final isCompleted = normalized == 'completed' || normalized == 'completado';
     final isPublished = normalized == 'published' || normalized == 'publicado';
     final isEmitted = normalized == 'emitted' || normalized == 'emitido';
+    final backgroundColor = isAnnulled
+        ? colorScheme.errorContainer
+        : isCompleted
+        ? colorScheme.tertiaryContainer
+        : isEmitted
+        ? colorScheme.secondaryContainer
+        : isPublished
+        ? colorScheme.primaryContainer
+        : colorScheme.surfaceContainerHigh;
+    final foregroundColor = isAnnulled
+        ? colorScheme.onErrorContainer
+        : isCompleted
+        ? colorScheme.onTertiaryContainer
+        : isEmitted
+        ? colorScheme.onSecondaryContainer
+        : isPublished
+        ? colorScheme.onPrimaryContainer
+        : colorScheme.onSurface;
     return Chip(
       label: Text(
         isAnnulled
@@ -986,16 +1005,10 @@ class _StatusChip extends StatelessWidget {
             : isPublished
             ? 'Publicado'
             : 'Borrador',
+        style: TextStyle(color: foregroundColor, fontWeight: FontWeight.w600),
       ),
-      backgroundColor: isAnnulled
-          ? Colors.red.shade100
-          : isCompleted
-          ? Colors.teal.shade100
-          : isEmitted
-          ? Colors.blue.shade100
-          : isPublished
-          ? Colors.green.shade100
-          : Colors.orange.shade100,
+      backgroundColor: backgroundColor,
+      side: BorderSide.none,
     );
   }
 }

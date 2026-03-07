@@ -33,6 +33,7 @@ import '../features/super_admin/services/super_admin_guard.dart';
 import '../shared/widgets/blocked_screen.dart';
 import '../shared/widgets/loading_screen.dart';
 import '../shared/widgets/responsive_page.dart';
+import 'theme_controller.dart';
 
 class AppRoutes {
   static const String home = '/';
@@ -234,7 +235,11 @@ class SessionController extends ChangeNotifier {
     final allModules = List<String>.from(AppModules.availableModules);
 
     final tenantRef = TenantPath.tenantRef(_firestore, tenantId);
-    final tenantUserRef = TenantPath.tenantUserRef(_firestore, tenantId, user.uid);
+    final tenantUserRef = TenantPath.tenantUserRef(
+      _firestore,
+      tenantId,
+      user.uid,
+    );
     final linkRef = _firestore.collection('user_tenant').doc(user.uid);
 
     final batch = _firestore.batch();
@@ -274,8 +279,8 @@ class SessionController extends ChangeNotifier {
   }) async {
     final linkRef = _firestore.collection('user_tenant').doc(user.uid);
     final linkSnapshot = await linkRef.get();
-    final existingTenantId =
-        (linkSnapshot.data()?['tenantId'] as String? ?? '').trim();
+    final existingTenantId = (linkSnapshot.data()?['tenantId'] as String? ?? '')
+        .trim();
     if (linkSnapshot.exists && existingTenantId == tenantId) {
       return;
     }
@@ -287,7 +292,8 @@ class SessionController extends ChangeNotifier {
     ).get();
     final tenantUserData = tenantUserSnapshot.data();
     final displayNameRaw = tenantUserData?['displayName'];
-    final displayName = displayNameRaw is String && displayNameRaw.trim().isNotEmpty
+    final displayName =
+        displayNameRaw is String && displayNameRaw.trim().isNotEmpty
         ? displayNameRaw.trim()
         : _resolveDefaultDisplayName(user);
 
@@ -485,16 +491,20 @@ class SessionController extends ChangeNotifier {
 }
 
 class AppRouter {
-  AppRouter({required this.sessionController});
+  AppRouter({required this.sessionController, required this.themeController});
 
   final SessionController sessionController;
+  final AppThemeController themeController;
 
   Route<dynamic> onGenerateRoute(RouteSettings settings) {
     switch (settings.name) {
       case AppRoutes.home:
         return MaterialPageRoute<void>(
           settings: settings,
-          builder: (_) => _RootScreen(sessionController: sessionController),
+          builder: (_) => _RootScreen(
+            sessionController: sessionController,
+            themeController: themeController,
+          ),
         );
       case AppRoutes.recetarioHome:
         return _recetarioGuardRoute(
@@ -693,9 +703,13 @@ class AppRouter {
 }
 
 class _RootScreen extends StatelessWidget {
-  const _RootScreen({required this.sessionController});
+  const _RootScreen({
+    required this.sessionController,
+    required this.themeController,
+  });
 
   final SessionController sessionController;
+  final AppThemeController themeController;
 
   @override
   Widget build(BuildContext context) {
@@ -738,17 +752,79 @@ class _RootScreen extends StatelessWidget {
       );
     }
 
-    return _ModuleHomeScreen(sessionController: sessionController);
+    return _ModuleHomeScreen(
+      sessionController: sessionController,
+      themeController: themeController,
+    );
   }
 }
 
 class _ModuleHomeScreen extends StatelessWidget {
-  const _ModuleHomeScreen({required this.sessionController});
+  const _ModuleHomeScreen({
+    required this.sessionController,
+    required this.themeController,
+  });
 
   final SessionController sessionController;
+  final AppThemeController themeController;
+
+  Future<void> _openThemeSettings(BuildContext context) async {
+    final selectedMode = await showModalBottomSheet<ThemeMode>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) {
+        final currentMode = themeController.themeMode;
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  'Apariencia',
+                  style: Theme.of(sheetContext).textTheme.titleLarge,
+                ),
+                const SizedBox(height: 8),
+                ListTile(
+                  onTap: () => Navigator.of(sheetContext).pop(ThemeMode.light),
+                  leading: const Icon(Icons.light_mode_outlined),
+                  title: const Text('Modo claro'),
+                  subtitle: const Text('Ideal para espacios con mucha luz.'),
+                  trailing: currentMode == ThemeMode.light
+                      ? Icon(
+                          Icons.check_circle,
+                          color: Theme.of(sheetContext).colorScheme.primary,
+                        )
+                      : null,
+                ),
+                ListTile(
+                  onTap: () => Navigator.of(sheetContext).pop(ThemeMode.dark),
+                  leading: const Icon(Icons.dark_mode_outlined),
+                  title: const Text('Modo oscuro'),
+                  subtitle: const Text('Reduce brillo en uso nocturno.'),
+                  trailing: currentMode == ThemeMode.dark
+                      ? Icon(
+                          Icons.check_circle,
+                          color: Theme.of(sheetContext).colorScheme.primary,
+                        )
+                      : null,
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+
+    if (selectedMode == null) {
+      return;
+    }
+    await themeController.setThemeMode(selectedMode);
+  }
 
   @override
   Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
     final session = sessionController.session;
     final modules = <Widget>[];
 
@@ -756,7 +832,15 @@ class _ModuleHomeScreen extends StatelessWidget {
       modules.add(
         Card(
           child: ListTile(
-            leading: const Icon(Icons.admin_panel_settings_outlined),
+            contentPadding: const EdgeInsets.symmetric(
+              horizontal: 16,
+              vertical: 4,
+            ),
+            leading: CircleAvatar(
+              backgroundColor: colorScheme.primaryContainer,
+              foregroundColor: colorScheme.onPrimaryContainer,
+              child: const Icon(Icons.admin_panel_settings_outlined),
+            ),
             title: const Text('Super Admin'),
             subtitle: const Text('Panel de administración global'),
             trailing: const Icon(Icons.chevron_right),
@@ -771,7 +855,15 @@ class _ModuleHomeScreen extends StatelessWidget {
       modules.add(
         Card(
           child: ListTile(
-            leading: const Icon(Icons.description_outlined),
+            contentPadding: const EdgeInsets.symmetric(
+              horizontal: 16,
+              vertical: 4,
+            ),
+            leading: CircleAvatar(
+              backgroundColor: colorScheme.primaryContainer,
+              foregroundColor: colorScheme.onPrimaryContainer,
+              child: const Icon(Icons.description_outlined),
+            ),
             title: const Text('Recetario Agronómico'),
             subtitle: const Text('Crear, emitir y compartir recetarios'),
             trailing: const Icon(Icons.chevron_right),
@@ -794,6 +886,11 @@ class _ModuleHomeScreen extends StatelessWidget {
         title: Text(appBarTitle),
         actions: [
           IconButton(
+            onPressed: () => _openThemeSettings(context),
+            icon: const Icon(Icons.settings_outlined),
+            tooltip: 'Configuracion de tema',
+          ),
+          IconButton(
             onPressed: sessionController.signOut,
             icon: const Icon(Icons.logout),
             tooltip: 'Cerrar sesión',
@@ -802,20 +899,53 @@ class _ModuleHomeScreen extends StatelessWidget {
       ),
       body: ResponsivePage(
         child: ListView(
+          padding: const EdgeInsets.only(bottom: 24),
           children: [
-            Text(
-              'Usuario: ${sessionController.userDisplayName}',
-              style: Theme.of(context).textTheme.titleMedium,
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Row(
+                  children: [
+                    CircleAvatar(
+                      radius: 24,
+                      backgroundColor: colorScheme.primaryContainer,
+                      foregroundColor: colorScheme.onPrimaryContainer,
+                      child: const Icon(Icons.person_outline),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            sessionController.userDisplayName,
+                            style: Theme.of(context).textTheme.titleMedium,
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            'Rol: $roleText',
+                            style: Theme.of(context).textTheme.bodyMedium,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             ),
-            const SizedBox(height: 4),
-            Text('Rol: $roleText'),
-            const SizedBox(height: 8),
+            const SizedBox(height: 12),
             if (sessionController.warningMessage != null)
               Container(
                 width: double.infinity,
                 padding: const EdgeInsets.all(10),
-                color: Colors.orange.shade100,
-                child: Text(sessionController.warningMessage!),
+                decoration: BoxDecoration(
+                  color: colorScheme.errorContainer,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Text(
+                  sessionController.warningMessage!,
+                  style: TextStyle(color: colorScheme.onErrorContainer),
+                ),
               ),
             const SizedBox(height: 12),
             Text('Modulos', style: Theme.of(context).textTheme.titleLarge),
@@ -882,9 +1012,7 @@ class _LoginScreenState extends State<LoginScreen> {
       if (!mounted) {
         return;
       }
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(
+      ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(_friendlyAuthError(error, createAccount))),
       );
     } finally {
@@ -900,7 +1028,9 @@ class _LoginScreenState extends State<LoginScreen> {
     final email = _emailController.text.trim();
     if (email.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Ingresa tu email para recuperar acceso.')),
+        const SnackBar(
+          content: Text('Ingresa tu email para recuperar acceso.'),
+        ),
       );
       return;
     }
@@ -932,9 +1062,9 @@ class _LoginScreenState extends State<LoginScreen> {
         if (!mounted) {
           return;
         }
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(message)),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(message)));
         return;
       }
 
