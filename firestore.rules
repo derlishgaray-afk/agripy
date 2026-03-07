@@ -157,6 +157,40 @@ service cloud.firestore {
         request.resource.data.displayName == inviteAfter(request.resource.data.onboardingInviteCode).displayName;
     }
 
+    function authEmailIndexTenantIdIsValid() {
+      return !('tenantId' in request.resource.data) ||
+        request.resource.data.tenantId == null ||
+        (hasUserTenantLink() &&
+          request.resource.data.tenantId is string &&
+          request.resource.data.tenantId == userTenantId());
+    }
+
+    function authEmailIndexPasswordResetAllowedIsValid() {
+      return !('passwordResetAllowed' in request.resource.data) ||
+        request.resource.data.passwordResetAllowed == null ||
+        (hasUserTenantLink() &&
+          request.resource.data.passwordResetAllowed is bool &&
+          request.resource.data.passwordResetAllowed == (userTenantId() != uid()));
+    }
+
+    function canCreateSelfTenantLinkFromExistingMembership(userId) {
+      return isSignedIn() &&
+        userId == uid() &&
+        !exists(/databases/$(database)/documents/user_tenant/$(userId)) &&
+        canWriteSelfTenantLinkFromExistingMembership(userId);
+    }
+
+    function canWriteSelfTenantLinkFromExistingMembership(userId) {
+      return isSignedIn() &&
+        userId == uid() &&
+        request.resource.data.tenantId is string &&
+        request.resource.data.displayName is string &&
+        request.resource.data.createdAt is timestamp &&
+        exists(/databases/$(database)/documents/tenants/$(request.resource.data.tenantId)/users/$(userId)) &&
+        get(/databases/$(database)/documents/tenants/$(request.resource.data.tenantId)/users/$(userId)).data.displayName ==
+          request.resource.data.displayName;
+    }
+
     match /super_admins/{superUid} {
       allow read: if isSuperAdmin() || (isSignedIn() && superUid == uid());
       allow create, update, delete: if isSuperAdmin();
@@ -168,7 +202,9 @@ service cloud.firestore {
       allow create, update: if isSignedIn() &&
         request.resource.data.uid == uid() &&
         request.resource.data.email == authEmail() &&
-        request.resource.data.emailLower == emailLower;
+        request.resource.data.emailLower == emailLower &&
+        authEmailIndexTenantIdIsValid() &&
+        authEmailIndexPasswordResetAllowedIsValid();
       allow delete: if isSuperAdmin();
     }
 
@@ -198,13 +234,15 @@ service cloud.firestore {
           inviteClaimMatchesRequest(
             request.resource.data.onboardingInviteCode,
             request.resource.data.tenantId
-          ));
+          )) ||
+        canCreateSelfTenantLinkFromExistingMembership(userId);
       allow update: if isSuperAdmin() ||
         (isSignedIn() &&
           userId == uid() &&
           resource.data.tenantId == uid() &&
           request.resource.data.tenantId == resource.data.tenantId &&
-          request.resource.data.createdAt == resource.data.createdAt);
+          request.resource.data.createdAt == resource.data.createdAt) ||
+        canWriteSelfTenantLinkFromExistingMembership(userId);
       allow delete: if isSuperAdmin();
     }
 
@@ -219,7 +257,8 @@ service cloud.firestore {
       allow delete: if isSuperAdmin();
 
       match /users/{userId} {
-        allow read: if isSuperAdmin() || isTenantMember(tenantId);
+        allow read: if isSuperAdmin() || isTenantMember(tenantId) ||
+          (isSignedIn() && userId == uid());
         allow create, update, delete: if isSuperAdmin() ||
           (isSelfWorkspaceOwner(tenantId) && userId == uid()) ||
           (tenantIsActive(tenantId) && requesterIsTenantAdmin(tenantId)) ||

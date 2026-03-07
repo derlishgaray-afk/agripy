@@ -278,6 +278,8 @@ class SuperAdminRepo {
 
     batch.set(tenantUserRef, {
       'displayName': invite.displayName,
+      'email': invite.email,
+      'emailLower': invite.email.trim().toLowerCase(),
       'role': tenantUserRoleToString(invite.role),
       'status': accountStatusToString(invite.status),
       'activeModules': invite.activeModules,

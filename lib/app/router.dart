@@ -72,6 +72,22 @@ class AppSession {
   bool get hasRecetarioAgronomico => access.hasRecetarioAgronomico;
 }
 
+enum PasswordResetEligibilityStatus {
+  allowed,
+  accountNotFound,
+  socialSignInOnly,
+  secondaryTenantUsersOnly,
+  firestoreVerificationUnavailable,
+}
+
+class PasswordResetEligibility {
+  const PasswordResetEligibility(this.status);
+
+  final PasswordResetEligibilityStatus status;
+
+  bool get isAllowed => status == PasswordResetEligibilityStatus.allowed;
+}
+
 class SessionController extends ChangeNotifier {
   SessionController({
     required FirebaseAuth auth,
@@ -141,6 +157,9 @@ class SessionController extends ChangeNotifier {
       superAdminProfile = await _superAdminGuard.loadActiveSuperAdmin(user.uid);
 
       var tenantId = await _tenantResolver.tryResolveTenantIdForUid(user.uid);
+      if (tenantId != null) {
+        await _ensureUserTenantLink(user: user, tenantId: tenantId);
+      }
       if (tenantId == null) {
         await _provisionPersonalWorkspace(user);
         tenantId = await _tenantResolver.tryResolveTenantIdForUid(user.uid);
@@ -148,6 +167,7 @@ class SessionController extends ChangeNotifier {
       if (tenantId == null) {
         throw StateError('No se pudo aprovisionar el espacio personal.');
       }
+      unawaited(_upsertEmailIndexForUser(user, tenantId: tenantId));
 
       try {
         final access = await _accessController.loadTenantUserAccess(
@@ -211,6 +231,7 @@ class SessionController extends ChangeNotifier {
     final trialEndsAt = now.add(const Duration(days: 7));
     final tenantId = user.uid;
     final displayName = _resolveDefaultDisplayName(user);
+    final allModules = List<String>.from(AppModules.availableModules);
 
     final tenantRef = TenantPath.tenantRef(_firestore, tenantId);
     final tenantUserRef = TenantPath.tenantUserRef(_firestore, tenantId, user.uid);
@@ -221,7 +242,7 @@ class SessionController extends ChangeNotifier {
       'name': displayName,
       'status': 'active',
       'plan': 'trial',
-      'modules': const [AppModules.recetarioAgronomico],
+      'modules': allModules,
       'createdAt': Timestamp.fromDate(now),
       'createdBy': user.uid,
       'trialEndsAt': Timestamp.fromDate(trialEndsAt),
@@ -229,9 +250,11 @@ class SessionController extends ChangeNotifier {
 
     batch.set(tenantUserRef, {
       'displayName': displayName,
+      'email': user.email,
+      'emailLower': user.email?.trim().toLowerCase(),
       'role': 'admin',
       'status': 'active',
-      'activeModules': const [AppModules.recetarioAgronomico],
+      'activeModules': allModules,
       'createdAt': Timestamp.fromDate(now),
       'createdBy': user.uid,
     }, SetOptions(merge: true));
@@ -243,6 +266,36 @@ class SessionController extends ChangeNotifier {
     }, SetOptions(merge: true));
 
     await batch.commit();
+  }
+
+  Future<void> _ensureUserTenantLink({
+    required User user,
+    required String tenantId,
+  }) async {
+    final linkRef = _firestore.collection('user_tenant').doc(user.uid);
+    final linkSnapshot = await linkRef.get();
+    final existingTenantId =
+        (linkSnapshot.data()?['tenantId'] as String? ?? '').trim();
+    if (linkSnapshot.exists && existingTenantId == tenantId) {
+      return;
+    }
+
+    final tenantUserSnapshot = await TenantPath.tenantUserRef(
+      _firestore,
+      tenantId,
+      user.uid,
+    ).get();
+    final tenantUserData = tenantUserSnapshot.data();
+    final displayNameRaw = tenantUserData?['displayName'];
+    final displayName = displayNameRaw is String && displayNameRaw.trim().isNotEmpty
+        ? displayNameRaw.trim()
+        : _resolveDefaultDisplayName(user);
+
+    await linkRef.set({
+      'tenantId': tenantId,
+      'displayName': displayName,
+      'createdAt': linkSnapshot.data()?['createdAt'] ?? Timestamp.now(),
+    }, SetOptions(merge: true));
   }
 
   String _resolveDefaultDisplayName(User user) {
@@ -326,52 +379,93 @@ class SessionController extends ChangeNotifier {
     await _auth.sendPasswordResetEmail(email: email);
   }
 
-  Future<bool> isEmailRegisteredInFirestore({required String email}) async {
-    final emailLower = email.trim().toLowerCase();
+  Future<PasswordResetEligibility> getPasswordResetEligibility({
+    required String email,
+  }) async {
+    final normalizedEmail = email.trim();
+    final emailLower = normalizedEmail.toLowerCase();
     if (emailLower.isEmpty) {
-      return false;
+      return const PasswordResetEligibility(
+        PasswordResetEligibilityStatus.accountNotFound,
+      );
     }
 
+    final methods = await _signInMethodsForEmail(normalizedEmail);
+    if (methods.isNotEmpty) {
+      final hasPasswordMethod =
+          methods.contains(EmailAuthProvider.EMAIL_PASSWORD_SIGN_IN_METHOD) ||
+          methods.contains('password');
+      if (!hasPasswordMethod) {
+        return const PasswordResetEligibility(
+          PasswordResetEligibilityStatus.socialSignInOnly,
+        );
+      }
+    }
+
+    DocumentSnapshot<Map<String, dynamic>>? snapshot;
     try {
-      final snapshot = await _firestore
+      snapshot = await _firestore
           .collection('auth_email_index')
           .doc(emailLower)
           .get();
-      if (snapshot.exists) {
-        return true;
-      }
-      return _isEmailRegisteredInAuth(email);
     } on FirebaseException catch (error) {
-      if (error.code != 'permission-denied') {
-        rethrow;
+      if (error.code == 'permission-denied') {
+        return const PasswordResetEligibility(
+          PasswordResetEligibilityStatus.firestoreVerificationUnavailable,
+        );
       }
-
-      // Fallback para entornos donde las reglas de Firestore aun no permiten
-      // leer auth_email_index desde la pantalla de login.
-      return _isEmailRegisteredInAuth(email);
+      rethrow;
     }
+
+    if (methods.isEmpty && !snapshot.exists) {
+      return const PasswordResetEligibility(
+        PasswordResetEligibilityStatus.accountNotFound,
+      );
+    }
+
+    final data = snapshot.data();
+    final passwordResetAllowed = data?['passwordResetAllowed'] == true;
+    final uid = (data?['uid'] as String? ?? '').trim();
+    final tenantId = (data?['tenantId'] as String? ?? '').trim();
+    final inferredAllowed =
+        passwordResetAllowed ||
+        (uid.isNotEmpty && tenantId.isNotEmpty && uid != tenantId);
+
+    return PasswordResetEligibility(
+      inferredAllowed
+          ? PasswordResetEligibilityStatus.allowed
+          : PasswordResetEligibilityStatus.secondaryTenantUsersOnly,
+    );
   }
 
-  Future<bool> _isEmailRegisteredInAuth(String email) async {
+  Future<List<String>> _signInMethodsForEmail(String email) async {
     // ignore: deprecated_member_use
-    final methods = await _auth.fetchSignInMethodsForEmail(email);
-    return methods.isNotEmpty;
+    return _auth.fetchSignInMethodsForEmail(email);
   }
 
-  Future<void> _upsertEmailIndexForUser(User user) async {
+  Future<void> _upsertEmailIndexForUser(User user, {String? tenantId}) async {
     final email = user.email?.trim();
     if (email == null || email.isEmpty) {
       return;
     }
 
     final emailLower = email.toLowerCase();
+    final payload = <String, dynamic>{
+      'uid': user.uid,
+      'email': email,
+      'emailLower': emailLower,
+      'updatedAt': FieldValue.serverTimestamp(),
+    };
+    if (tenantId != null && tenantId.trim().isNotEmpty) {
+      payload['tenantId'] = tenantId.trim();
+      payload['passwordResetAllowed'] = tenantId.trim() != user.uid;
+    }
+
     try {
-      await _firestore.collection('auth_email_index').doc(emailLower).set({
-        'uid': user.uid,
-        'email': email,
-        'emailLower': emailLower,
-        'updatedAt': FieldValue.serverTimestamp(),
-      }, SetOptions(merge: true));
+      await _firestore
+          .collection('auth_email_index')
+          .doc(emailLower)
+          .set(payload, SetOptions(merge: true));
     } catch (_) {}
   }
 
@@ -816,14 +910,30 @@ class _LoginScreenState extends State<LoginScreen> {
     });
 
     try {
-      final isRegistered = await widget.sessionController
-          .isEmailRegisteredInFirestore(email: email);
-      if (!isRegistered) {
+      final eligibility = await widget.sessionController
+          .getPasswordResetEligibility(email: email);
+      if (!mounted) {
+        return;
+      }
+
+      if (!eligibility.isAllowed) {
+        final message = switch (eligibility.status) {
+          PasswordResetEligibilityStatus.accountNotFound =>
+            'No existe una cuenta con ese email.',
+          PasswordResetEligibilityStatus.socialSignInOnly =>
+            'Esta cuenta no usa contrasena. Ingresa con Google o Apple.',
+          PasswordResetEligibilityStatus.secondaryTenantUsersOnly =>
+            'La recuperacion de contrasena solo aplica a usuarios secundarios registrados con email y contrasena.',
+          PasswordResetEligibilityStatus.firestoreVerificationUnavailable =>
+            'No se pudo validar el email por permisos de Firestore. Publica las reglas nuevas o crea auth_email_index manualmente.',
+          PasswordResetEligibilityStatus.allowed =>
+            'No se pudo validar la recuperacion de contrasena.',
+        };
         if (!mounted) {
           return;
         }
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('No existe una cuenta con ese email.')),
+          SnackBar(content: Text(message)),
         );
         return;
       }

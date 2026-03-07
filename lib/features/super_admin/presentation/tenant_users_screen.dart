@@ -37,16 +37,6 @@ class _TenantUsersScreenState extends State<TenantUsersScreen> {
     );
   }
 
-  Future<void> _openInviteForm() async {
-    await Navigator.of(context).pushNamed(
-      AppRoutes.superAdminTenantInviteForm,
-      arguments: TenantInviteFormArgs(
-        tenantId: widget.args.tenantId,
-        actorUid: widget.args.actorUid,
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<TenantModel?>(
@@ -76,16 +66,7 @@ class _TenantUsersScreenState extends State<TenantUsersScreen> {
         final modules = tenant.modules.map(AppModules.labelOf).join(', ');
 
         return Scaffold(
-          appBar: AppBar(
-            title: Text('Usuarios - ${tenant.name}'),
-            actions: [
-              IconButton(
-                onPressed: _openInviteForm,
-                icon: const Icon(Icons.key_outlined),
-                tooltip: 'Generar invitación',
-              ),
-            ],
-          ),
+          appBar: AppBar(title: Text('Usuarios - ${tenant.name}')),
           floatingActionButton: FloatingActionButton.extended(
             onPressed: () => _openUserForm(),
             icon: const Icon(Icons.person_add_alt_1_outlined),
