@@ -1,5 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../../app/router.dart';
 import '../../../core/services/access_controller.dart';
@@ -29,6 +30,10 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
   @override
   void initState() {
     super.initState();
+    if (_isOperator) {
+      _statusFilter = 'emitted';
+      _emittedStateFilter = 'pending';
+    }
     _repo = RecetarioRepo(
       firestore: FirebaseFirestore.instance,
       tenantId: widget.session.tenantId,
@@ -39,10 +44,14 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
 
   bool get _canEdit => widget.session.access.canEditRecetario;
 
+  bool get _isOperator => widget.session.access.role == TenantRole.operator;
+
   bool get _canEmit {
     final role = widget.session.access.role;
     return role == TenantRole.admin || role == TenantRole.engineer;
   }
+
+  bool get _canUpdateApplications => _canEmit || _isOperator;
 
   Future<void> _openRecipeForm({Recipe? recipe}) async {
     await Navigator.of(
@@ -56,8 +65,12 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
     ).pushNamed(AppRoutes.emitOrder, arguments: recipe);
   }
 
-  String? get _effectiveStatusFilter =>
-      _statusFilter == 'all' ? null : _statusFilter;
+  String? get _effectiveStatusFilter {
+    if (_isOperator) {
+      return 'emitted';
+    }
+    return _statusFilter == 'all' ? null : _statusFilter;
+  }
 
   Future<void> _reshareAsPng(Recipe recipe) async {
     final recipeId = recipe.id;
@@ -413,6 +426,36 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
     }
   }
 
+  String _statusFilterLabel(String value) {
+    switch (value) {
+      case 'draft':
+        return 'Borrador';
+      case 'published':
+        return 'Publicado';
+      case 'emitted':
+        return 'Emitido';
+      default:
+        return 'Todos';
+    }
+  }
+
+  bool get _showFilterSummary {
+    if (_isOperator) {
+      return true;
+    }
+    return _statusFilter != 'all';
+  }
+
+  String get _activeFilterSummary {
+    final statusLabel = _isOperator
+        ? 'Emitido'
+        : _statusFilterLabel(_statusFilter);
+    if (_isOperator || _statusFilter == 'emitted') {
+      return '$statusLabel - ${_emittedStateFilterLabel(_emittedStateFilter)}';
+    }
+    return statusLabel;
+  }
+
   String _orderStateKey(ApplicationOrder? order) {
     if (order == null) {
       return 'pending';
@@ -438,22 +481,86 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
     return 'Emitido';
   }
 
+  bool _orderBelongsToCurrentOperator(ApplicationOrder order) {
+    final assignedUid = order.assignedToUid.trim();
+    if (assignedUid.isNotEmpty && assignedUid == widget.session.uid) {
+      return true;
+    }
+    if (!_isOperator) {
+      return false;
+    }
+    final operatorName = _normalizeOperatorName(order.operatorName);
+    final currentName = _normalizeOperatorName(
+      widget.session.access.displayName,
+    );
+    return operatorName.isNotEmpty && operatorName == currentName;
+  }
+
+  String _normalizeOperatorName(String value) {
+    return value.trim().toLowerCase().replaceAll(RegExp(r'\s+'), ' ');
+  }
+
+  double _plannedTankCount(ApplicationOrder? order) {
+    if (order == null || order.tankCount <= 0) {
+      return 0;
+    }
+    return order.tankCount;
+  }
+
+  double _appliedTankCount(ApplicationOrder? order) {
+    if (order == null) {
+      return 0;
+    }
+    final planned = _plannedTankCount(order);
+    final applied = order.execution.appliedTankCount;
+    if (applied > 0) {
+      if (planned <= 0) {
+        return applied;
+      }
+      return applied.clamp(0, planned).toDouble();
+    }
+    if (_orderStateKey(order) == 'completed') {
+      return planned;
+    }
+    return 0;
+  }
+
+  double _pendingTankCount(ApplicationOrder? order) {
+    final planned = _plannedTankCount(order);
+    if (planned <= 0) {
+      return 0;
+    }
+    final pending = planned - _appliedTankCount(order);
+    if (pending <= 0) {
+      return 0;
+    }
+    return pending;
+  }
+
   String _orderStateDetail(ApplicationOrder? order) {
     final key = _orderStateKey(order);
+    final planned = _plannedTankCount(order);
+    final applied = _appliedTankCount(order);
+    final pending = _pendingTankCount(order);
+    final hasProgress = planned > 0;
+    final progressText = hasProgress
+        ? ' | Tanques ${applied.toStringAsFixed(2)}/${planned.toStringAsFixed(2)}'
+              ' (pendiente ${pending.toStringAsFixed(2)})'
+        : '';
     if (key == 'completed') {
       final doneAt = order?.execution.doneAt;
       if (doneAt == null) {
-        return 'Actualizacion: Completado';
+        return 'Actualizacion: Completado$progressText';
       }
-      return 'Actualizacion: Completado el ${_formatDateTime(doneAt)}';
+      return 'Actualizacion: Completado el ${_formatDateTime(doneAt)}$progressText';
     }
     if (key == 'annulled') {
       return 'Actualizacion: Anulado';
     }
-    return 'Actualizacion: Pendiente';
+    return 'Actualizacion: Pendiente$progressText';
   }
 
-  Future<DateTime?> _pickCompletionDateTime({DateTime? initialDateTime}) async {
+  Future<DateTime?> _pickDateTime({DateTime? initialDateTime}) async {
     final now = DateTime.now();
     final initial = initialDateTime ?? now;
     final pickedDate = await showDatePicker(
@@ -481,10 +588,140 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
     );
   }
 
+  Future<_TankApplicationInput?> _collectTankApplicationInput({
+    required ApplicationOrder order,
+  }) async {
+    final formKey = GlobalKey<FormState>();
+    final tankCountController = TextEditingController();
+    final tankCapacityController = TextEditingController(
+      text: _formatTankCapacityInt(order.tankCapacityLt),
+    );
+    var appliedAt = DateTime.now();
+    final pending = _pendingTankCount(order);
+    if (pending > 0) {
+      tankCountController.text = pending.toStringAsFixed(2);
+    }
+
+    final result = await showDialog<_TankApplicationInput>(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: const Text('Registrar aplicacion por tanque'),
+              content: Form(
+                key: formKey,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Tanques pendientes: ${pending.toStringAsFixed(2)}'),
+                    const SizedBox(height: 10),
+                    TextFormField(
+                      controller: tankCountController,
+                      keyboardType: const TextInputType.numberWithOptions(
+                        decimal: true,
+                      ),
+                      decoration: const InputDecoration(
+                        labelText: 'Cantidad de tanques aplicados',
+                        border: OutlineInputBorder(),
+                      ),
+                      validator: (value) {
+                        final number = parseFlexibleDouble(value?.trim());
+                        if (number <= 0) {
+                          return 'Ingresa una cantidad mayor a cero.';
+                        }
+                        return null;
+                      },
+                    ),
+                    const SizedBox(height: 10),
+                    TextFormField(
+                      controller: tankCapacityController,
+                      keyboardType: TextInputType.number,
+                      inputFormatters: [
+                        FilteringTextInputFormatter.digitsOnly,
+                        const _ThousandsIntInputFormatter(),
+                      ],
+                      decoration: const InputDecoration(
+                        labelText: 'Capacidad del tanque (Lt)',
+                        border: OutlineInputBorder(),
+                      ),
+                      validator: (value) {
+                        final number = _parseTankCapacityInt(value);
+                        if (number <= 0) {
+                          return 'Ingresa una capacidad valida.';
+                        }
+                        return null;
+                      },
+                    ),
+                    const SizedBox(height: 10),
+                    OutlinedButton.icon(
+                      onPressed: () async {
+                        final picked = await _pickDateTime(
+                          initialDateTime: appliedAt,
+                        );
+                        if (picked == null || !mounted) {
+                          return;
+                        }
+                        if (!dialogContext.mounted) {
+                          return;
+                        }
+                        setDialogState(() {
+                          appliedAt = picked;
+                        });
+                      },
+                      icon: const Icon(Icons.event_outlined),
+                      label: Text(
+                        'Fecha y hora: ${_formatDateTime(appliedAt)}',
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(dialogContext).pop(),
+                  child: const Text('Cancelar'),
+                ),
+                FilledButton(
+                  onPressed: () {
+                    if (!formKey.currentState!.validate()) {
+                      return;
+                    }
+                    final tankCount = parseFlexibleDouble(
+                      tankCountController.text.trim(),
+                    );
+                    final tankCapacity = _parseTankCapacityInt(
+                      tankCapacityController.text,
+                    );
+                    Navigator.of(dialogContext).pop(
+                      _TankApplicationInput(
+                        appliedAt: appliedAt,
+                        tankCount: tankCount,
+                        tankCapacityLt: tankCapacity,
+                      ),
+                    );
+                  },
+                  child: const Text('Registrar'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    return result;
+  }
+
   Future<void> _showEmissionUpdateDialog({
     required Recipe recipe,
     required ApplicationOrder order,
   }) async {
+    if (_isOperator && !_orderBelongsToCurrentOperator(order)) {
+      _showSnack('Solo puedes actualizar emitidos asignados a tu usuario.');
+      return;
+    }
     final orderId = order.id;
     if (orderId == null || orderId.isEmpty) {
       _showSnack('No se pudo actualizar: orden sin identificador.');
@@ -496,10 +733,36 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
         var submitting = false;
         return StatefulBuilder(
           builder: (context, setDialogState) {
+            final plannedTankCount = _plannedTankCount(order);
+            final appliedTankCount = _appliedTankCount(order);
+            final pendingTankCount = _pendingTankCount(order);
+            final isAnnulled = _orderStateKey(order) == 'annulled';
+            final canManageOrder = _canEmit;
+            final canRegisterProgress =
+                _canUpdateApplications && !isAnnulled && pendingTankCount > 0;
             return AlertDialog(
               title: const Text('Actualizacion de emitido'),
-              content: Text(
-                'Recetario: ${recipe.title}\nCodigo: ${order.code}\nEstado actual: ${_orderStateLabel(order)}',
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Recetario: ${recipe.title}\nCodigo: ${order.code}\nEstado actual: ${_orderStateLabel(order)}',
+                  ),
+                  const SizedBox(height: 10),
+                  Text(
+                    'Volumen de agua: ${recipe.waterVolumeLHa.toStringAsFixed(2)} L/ha',
+                  ),
+                  Text(
+                    'Tanques total previsto: ${plannedTankCount.toStringAsFixed(2)}',
+                  ),
+                  Text(
+                    'Tanques realizado: ${appliedTankCount.toStringAsFixed(2)}',
+                  ),
+                  Text(
+                    'Tanques pendiente: ${pendingTankCount.toStringAsFixed(2)}',
+                  ),
+                ],
               ),
               actions: [
                 TextButton(
@@ -509,93 +772,163 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
                   child: const Text('Cerrar'),
                 ),
                 OutlinedButton(
-                  onPressed: submitting
+                  onPressed: submitting || !canRegisterProgress
                       ? null
                       : () async {
-                          final doneAt = await _pickCompletionDateTime(
-                            initialDateTime:
-                                order.execution.doneAt ?? DateTime.now(),
+                          final input = await _collectTankApplicationInput(
+                            order: order,
                           );
-                          if (doneAt == null) {
+                          if (input == null) {
                             return;
                           }
                           setDialogState(() {
                             submitting = true;
                           });
                           try {
-                            await _repo.markOrderCompleted(
+                            await _repo.registerOrderTankApplication(
                               orderId: orderId,
-                              completedAt: doneAt,
+                              appliedAt: input.appliedAt,
+                              appliedTankCount: input.tankCount,
+                              tankCapacityLt: input.tankCapacityLt,
                             );
                             if (!mounted || !dialogContext.mounted) {
                               return;
                             }
                             Navigator.of(dialogContext).pop();
-                            _showSnack('Emitido actualizado a completado.');
+                            _showSnack(
+                              'Aplicacion registrada: ${input.tankCount.toStringAsFixed(2)} tanque(s) '
+                              'de ${_formatTankCapacityInt(input.tankCapacityLt)} Lt.',
+                            );
                           } catch (error) {
                             if (!mounted) {
                               return;
                             }
-                            _showSnack('No se pudo actualizar: $error');
+                            _showSnack(
+                              'No se pudo actualizar: ${_friendlyUpdateError(error)}',
+                            );
                             setDialogState(() {
                               submitting = false;
                             });
                           }
                         },
-                  child: const Text('Completado'),
+                  child: const Text('Registrar aplicacion'),
                 ),
-                FilledButton(
-                  onPressed: submitting
-                      ? null
-                      : () async {
-                          final confirm = await showDialog<bool>(
-                            context: context,
-                            builder: (context) {
-                              return AlertDialog(
-                                title: const Text('Anular emitido'),
-                                content: const Text(
-                                  'Esta accion marcara el emitido como anulado.',
-                                ),
-                                actions: [
-                                  TextButton(
-                                    onPressed: () =>
-                                        Navigator.of(context).pop(false),
-                                    child: const Text('Cancelar'),
+                if (canManageOrder && !isAnnulled)
+                  FilledButton(
+                    onPressed: submitting
+                        ? null
+                        : () async {
+                            final confirm = await showDialog<bool>(
+                              context: context,
+                              builder: (context) {
+                                return AlertDialog(
+                                  title: const Text('Anular emitido'),
+                                  content: const Text(
+                                    'Esta accion marcara el emitido como anulado.',
                                   ),
-                                  FilledButton(
-                                    onPressed: () =>
-                                        Navigator.of(context).pop(true),
-                                    child: const Text('Anular'),
-                                  ),
-                                ],
+                                  actions: [
+                                    TextButton(
+                                      onPressed: () =>
+                                          Navigator.of(context).pop(false),
+                                      child: const Text('Cancelar'),
+                                    ),
+                                    FilledButton(
+                                      onPressed: () =>
+                                          Navigator.of(context).pop(true),
+                                      child: const Text('Anular'),
+                                    ),
+                                  ],
+                                );
+                              },
+                            );
+                            if (confirm != true) {
+                              return;
+                            }
+                            setDialogState(() {
+                              submitting = true;
+                            });
+                            try {
+                              await _repo.markOrderAnnulled(orderId: orderId);
+                              if (!mounted || !dialogContext.mounted) {
+                                return;
+                              }
+                              Navigator.of(dialogContext).pop();
+                              _showSnack('Emitido actualizado a anulado.');
+                            } catch (error) {
+                              if (!mounted) {
+                                return;
+                              }
+                              _showSnack('No se pudo anular: $error');
+                              setDialogState(() {
+                                submitting = false;
+                              });
+                            }
+                          },
+                    child: const Text('Anular'),
+                  )
+                else if (canManageOrder)
+                  FilledButton(
+                    onPressed: submitting
+                        ? null
+                        : () async {
+                            final recipeId = recipe.id;
+                            if (recipeId == null || recipeId.trim().isEmpty) {
+                              _showSnack(
+                                'No se puede eliminar: receta emitida sin id.',
                               );
-                            },
-                          );
-                          if (confirm != true) {
-                            return;
-                          }
-                          setDialogState(() {
-                            submitting = true;
-                          });
-                          try {
-                            await _repo.markOrderAnnulled(orderId: orderId);
-                            if (!mounted || !dialogContext.mounted) {
                               return;
                             }
-                            Navigator.of(dialogContext).pop();
-                            _showSnack('Emitido actualizado a anulado.');
-                          } catch (error) {
-                            if (!mounted) {
+                            final confirm = await showDialog<bool>(
+                              context: context,
+                              builder: (context) {
+                                return AlertDialog(
+                                  title: const Text('Eliminar emitido anulado'),
+                                  content: const Text(
+                                    'Se eliminara la orden anulada y el recetario emitido asociado.',
+                                  ),
+                                  actions: [
+                                    TextButton(
+                                      onPressed: () =>
+                                          Navigator.of(context).pop(false),
+                                      child: const Text('Cancelar'),
+                                    ),
+                                    FilledButton(
+                                      onPressed: () =>
+                                          Navigator.of(context).pop(true),
+                                      child: const Text('Eliminar'),
+                                    ),
+                                  ],
+                                );
+                              },
+                            );
+                            if (confirm != true) {
                               return;
                             }
-                            _showSnack('No se pudo anular: $error');
                             setDialogState(() {
-                              submitting = false;
+                              submitting = true;
                             });
-                          }
-                        },
-                  child: const Text('Anular'),
-                ),
+                            try {
+                              await _repo.deleteAnnulledOrderAndRecipe(
+                                orderId: orderId,
+                                recipeId: recipeId,
+                              );
+                              if (!mounted || !dialogContext.mounted) {
+                                return;
+                              }
+                              Navigator.of(dialogContext).pop();
+                              _showSnack('Emitido anulado eliminado.');
+                            } catch (error) {
+                              if (!mounted) {
+                                return;
+                              }
+                              _showSnack('No se pudo eliminar: $error');
+                              setDialogState(() {
+                                submitting = false;
+                              });
+                            }
+                          },
+                    child: const Text('Eliminar'),
+                  ),
               ],
             );
           },
@@ -615,6 +948,37 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
 
   String _formatDateTime(DateTime dateTime) {
     return '${dateTime.day.toString().padLeft(2, '0')}/${dateTime.month.toString().padLeft(2, '0')}/${dateTime.year} ${dateTime.hour.toString().padLeft(2, '0')}:${dateTime.minute.toString().padLeft(2, '0')}';
+  }
+
+  String _friendlyUpdateError(Object error) {
+    if (error is FirebaseException) {
+      if (error.code == 'permission-denied') {
+        return 'Permiso denegado por reglas de seguridad.';
+      }
+      if (error.code == 'unavailable') {
+        return 'Servicio no disponible temporalmente. Intenta de nuevo.';
+      }
+      return error.message ?? 'Error de Firebase.';
+    }
+    final raw = error.toString();
+    if (raw.contains('TimeoutException')) {
+      return 'Tiempo de espera agotado al guardar. Reintenta con buena conexion.';
+    }
+    return raw;
+  }
+
+  String _formatTankCapacityInt(num value) {
+    final asInt = value.round();
+    final digits = asInt.toString();
+    return digits.replaceAllMapped(RegExp(r'\B(?=(\d{3})+(?!\d))'), (_) => '.');
+  }
+
+  double _parseTankCapacityInt(String? value) {
+    final digitsOnly = (value ?? '').replaceAll(RegExp(r'[^0-9]'), '');
+    if (digitsOnly.isEmpty) {
+      return 0;
+    }
+    return double.tryParse(digitsOnly) ?? 0;
   }
 
   double _calculatePerTankAmount({
@@ -658,51 +1022,78 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Recetario Agronómico'),
-        actions: [
-          if (compact)
-            PopupMenuButton<String>(
-              tooltip: 'Filtrar estado',
-              initialValue: _statusFilter,
-              icon: const Icon(Icons.filter_list),
-              onSelected: (value) => setState(() => _statusFilter = value),
-              itemBuilder: (context) => const [
-                PopupMenuItem<String>(value: 'all', child: Text('Todos')),
-                PopupMenuItem<String>(value: 'draft', child: Text('Borrador')),
-                PopupMenuItem<String>(
-                  value: 'published',
-                  child: Text('Publicado'),
+        bottom: _showFilterSummary
+            ? PreferredSize(
+                preferredSize: const Size.fromHeight(28),
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      'Filtro: $_activeFilterSummary',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
                 ),
-                PopupMenuItem<String>(value: 'emitted', child: Text('Emitido')),
-              ],
-            )
-          else
-            DropdownButtonHideUnderline(
-              child: DropdownButton<String>(
-                value: _statusFilter,
-                onChanged: (value) {
-                  if (value == null) {
-                    return;
-                  }
-                  setState(() => _statusFilter = value);
-                },
-                items: const [
-                  DropdownMenuItem<String>(value: 'all', child: Text('Todos')),
-                  DropdownMenuItem<String>(
+              )
+            : null,
+        actions: [
+          if (!_isOperator)
+            if (compact)
+              PopupMenuButton<String>(
+                tooltip: 'Filtrar estado',
+                initialValue: _statusFilter,
+                icon: const Icon(Icons.filter_list),
+                onSelected: (value) => setState(() => _statusFilter = value),
+                itemBuilder: (context) => const [
+                  PopupMenuItem<String>(value: 'all', child: Text('Todos')),
+                  PopupMenuItem<String>(
                     value: 'draft',
                     child: Text('Borrador'),
                   ),
-                  DropdownMenuItem<String>(
+                  PopupMenuItem<String>(
                     value: 'published',
                     child: Text('Publicado'),
                   ),
-                  DropdownMenuItem<String>(
+                  PopupMenuItem<String>(
                     value: 'emitted',
                     child: Text('Emitido'),
                   ),
                 ],
+              )
+            else
+              DropdownButtonHideUnderline(
+                child: DropdownButton<String>(
+                  value: _statusFilter,
+                  onChanged: (value) {
+                    if (value == null) {
+                      return;
+                    }
+                    setState(() => _statusFilter = value);
+                  },
+                  items: const [
+                    DropdownMenuItem<String>(
+                      value: 'all',
+                      child: Text('Todos'),
+                    ),
+                    DropdownMenuItem<String>(
+                      value: 'draft',
+                      child: Text('Borrador'),
+                    ),
+                    DropdownMenuItem<String>(
+                      value: 'published',
+                      child: Text('Publicado'),
+                    ),
+                    DropdownMenuItem<String>(
+                      value: 'emitted',
+                      child: Text('Emitido'),
+                    ),
+                  ],
+                ),
               ),
-            ),
-          if (_statusFilter == 'emitted')
+          if (_statusFilter == 'emitted' || _isOperator)
             if (compact)
               PopupMenuButton<String>(
                 tooltip:
@@ -781,7 +1172,13 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
           }
           final recipes = snapshot.data!;
           if (recipes.isEmpty) {
-            return const Center(child: Text('Sin recetas cargadas.'));
+            return Center(
+              child: Text(
+                _isOperator
+                    ? 'Sin emitidos asignados a este operador.'
+                    : 'Sin recetas cargadas.',
+              ),
+            );
           }
 
           return StreamBuilder<List<ApplicationOrder>>(
@@ -793,6 +1190,9 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
               final orderByRecipeId = <String, ApplicationOrder>{};
               if (ordersSnapshot.hasData) {
                 for (final order in ordersSnapshot.data!) {
+                  if (_isOperator && !_orderBelongsToCurrentOperator(order)) {
+                    continue;
+                  }
                   final recipeId = order.recipeId.trim();
                   if (recipeId.isEmpty ||
                       orderByRecipeId.containsKey(recipeId)) {
@@ -801,25 +1201,56 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
                   orderByRecipeId[recipeId] = order;
                 }
               }
-              final filteredRecipes =
-                  _statusFilter == 'emitted' && _emittedStateFilter != 'all'
-                  ? recipes
-                        .where((recipe) {
-                          final recipeId = recipe.id;
-                          if (recipeId == null || recipeId.isEmpty) {
-                            return false;
-                          }
-                          final order = orderByRecipeId[recipeId];
-                          return _orderStateKey(order) == _emittedStateFilter;
-                        })
-                        .toList(growable: false)
-                  : recipes;
+              var filteredRecipes = recipes;
+              if (_isOperator) {
+                filteredRecipes = recipes
+                    .where((recipe) {
+                      final recipeId = recipe.id;
+                      if (recipeId == null || recipeId.isEmpty) {
+                        return false;
+                      }
+                      return orderByRecipeId.containsKey(recipeId);
+                    })
+                    .toList(growable: false);
+              }
+              if ((_statusFilter == 'emitted' || _isOperator) &&
+                  _emittedStateFilter != 'all') {
+                filteredRecipes = filteredRecipes
+                    .where((recipe) {
+                      final recipeId = recipe.id;
+                      if (recipeId == null || recipeId.isEmpty) {
+                        return false;
+                      }
+                      final order = orderByRecipeId[recipeId];
+                      return _orderStateKey(order) == _emittedStateFilter;
+                    })
+                    .toList(growable: false);
+              }
               if (filteredRecipes.isEmpty) {
-                return Center(
-                  child: Text(
-                    'Sin emitidos en estado ${_emittedStateFilterLabel(_emittedStateFilter).toLowerCase()}.',
-                  ),
-                );
+                if (_isOperator) {
+                  final suffix = _emittedStateFilter == 'all'
+                      ? ''
+                      : ' en estado ${_emittedStateFilterLabel(_emittedStateFilter).toLowerCase()}';
+                  return Center(child: Text('Sin emitidos asignados$suffix.'));
+                }
+                if (_effectiveStatusFilter == 'emitted') {
+                  return Center(
+                    child: Text(
+                      'Sin emitidos en estado ${_emittedStateFilterLabel(_emittedStateFilter).toLowerCase()}.',
+                    ),
+                  );
+                }
+                if (_effectiveStatusFilter == 'published') {
+                  return const Center(
+                    child: Text('Sin recetarios publicados.'),
+                  );
+                }
+                if (_effectiveStatusFilter == 'draft') {
+                  return const Center(
+                    child: Text('Sin recetarios en borrador.'),
+                  );
+                }
+                return Center(child: const Text('Sin recetas cargadas.'));
               }
               return ResponsivePage(
                 child: ListView.separated(
@@ -910,7 +1341,11 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
                                     icon: const Icon(Icons.calculate_outlined),
                                     label: const Text('Productos'),
                                   ),
-                                if (_canEmit && isEmitted && order != null)
+                                if (_canUpdateApplications &&
+                                    isEmitted &&
+                                    order != null &&
+                                    (!_isOperator ||
+                                        _orderBelongsToCurrentOperator(order)))
                                   OutlinedButton.icon(
                                     onPressed: () => _showEmissionUpdateDialog(
                                       recipe: recipe,
@@ -956,6 +1391,41 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
           );
         },
       ),
+    );
+  }
+}
+
+class _TankApplicationInput {
+  const _TankApplicationInput({
+    required this.appliedAt,
+    required this.tankCount,
+    required this.tankCapacityLt,
+  });
+
+  final DateTime appliedAt;
+  final double tankCount;
+  final double tankCapacityLt;
+}
+
+class _ThousandsIntInputFormatter extends TextInputFormatter {
+  const _ThousandsIntInputFormatter();
+
+  @override
+  TextEditingValue formatEditUpdate(
+    TextEditingValue oldValue,
+    TextEditingValue newValue,
+  ) {
+    final digits = newValue.text.replaceAll(RegExp(r'[^0-9]'), '');
+    if (digits.isEmpty) {
+      return const TextEditingValue(text: '');
+    }
+    final formatted = digits.replaceAllMapped(
+      RegExp(r'\B(?=(\d{3})+(?!\d))'),
+      (_) => '.',
+    );
+    return TextEditingValue(
+      text: formatted,
+      selection: TextSelection.collapsed(offset: formatted.length),
     );
   }
 }

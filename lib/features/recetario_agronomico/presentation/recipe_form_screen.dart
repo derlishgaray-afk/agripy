@@ -177,6 +177,13 @@ class _RecipeFormScreenState extends State<RecipeFormScreen> {
       _showSnack('Las recetas emitidas no se pueden editar.');
       return;
     }
+    if (status.trim().toLowerCase() == 'published') {
+      final publishValidationError = _validateDoseLinesForPublish();
+      if (publishValidationError != null) {
+        _showSnack(publishValidationError);
+        return;
+      }
+    }
 
     final doseLines = _doseLineInputs
         .map((input) => input.toDoseLine())
@@ -228,6 +235,22 @@ class _RecipeFormScreenState extends State<RecipeFormScreen> {
         });
       }
     }
+  }
+
+  String? _validateDoseLinesForPublish() {
+    for (var i = 0; i < _doseLineInputs.length; i++) {
+      final row = _doseLineInputs[i];
+      final product = row.productName.text.trim();
+      if (product.isEmpty) {
+        continue;
+      }
+      final doseText = row.dose.text.trim();
+      final doseValue = parseFlexibleDouble(doseText);
+      if (doseText.isEmpty || doseValue <= 0) {
+        return 'Completa la dosis en "Producto comercial ${i + 1}" antes de publicar.';
+      }
+    }
+    return null;
   }
 
   List<String> _buildMixOrderFromDoseLines(List<DoseLine> doseLines) {
@@ -520,33 +543,90 @@ class _DoseLineEditorRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     Widget buildProductField() {
-      return DropdownButtonFormField<String>(
-        initialValue: _resolveSelectedSupplyId(
-          input.selectedSupplyId,
-          supplies,
-        ),
-        decoration: const InputDecoration(border: OutlineInputBorder())
-            .copyWith(
-              labelText: 'Producto comercial $lineNumber',
-              border: OutlineInputBorder(),
-            ),
-        items: supplies
-            .where((item) => (item.id ?? '').isNotEmpty)
-            .map(
-              (item) => DropdownMenuItem<String>(
-                value: item.id!,
-                child: Text(item.commercialName),
+      final hasOptions = supplies.any((item) => (item.id ?? '').isNotEmpty);
+      return TextFormField(
+        controller: input.productName,
+        readOnly: true,
+        decoration: InputDecoration(
+          labelText: 'Producto comercial $lineNumber',
+          border: const OutlineInputBorder(),
+          suffixIcon: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              IconButton(
+                tooltip: 'Quitar producto',
+                onPressed: () {
+                  input.selectedSupplyId = null;
+                  input.productName.clear();
+                  input.activeIngredient.clear();
+                  input.dose.clear();
+                  input.unit.text = 'Lt.';
+                },
+                icon: const Icon(Icons.clear),
               ),
-            )
-            .toList(growable: false),
-        onChanged: supplies.isEmpty
+              IconButton(
+                tooltip: 'Buscar producto',
+                onPressed: !hasOptions
+                    ? null
+                    : () async {
+                        final picked = await _pickSupplyWithSearch(
+                          context,
+                          supplies,
+                          selectedSupplyId: input.selectedSupplyId,
+                        );
+                        if (picked == null) {
+                          return;
+                        }
+                        if (picked.cleared) {
+                          input.selectedSupplyId = null;
+                          input.productName.clear();
+                          input.activeIngredient.clear();
+                          input.dose.clear();
+                          input.unit.text = 'Lt.';
+                          return;
+                        }
+                        final selected = picked.supply;
+                        if (selected == null) {
+                          return;
+                        }
+                        input.selectedSupplyId = selected.id;
+                        input.productName.text = selected.commercialName;
+                        input.activeIngredient.text =
+                            selected.activeIngredient ?? '';
+                        input.unit.text = _resolveSelectedUnit(selected.unit);
+                      },
+                icon: const Icon(Icons.search),
+              ),
+            ],
+          ),
+        ),
+        onTap: !hasOptions
             ? null
-            : (value) {
-                final selected = _findSupply(value, supplies);
-                input.selectedSupplyId = selected?.id;
-                input.productName.text = selected?.commercialName ?? '';
-                input.activeIngredient.text = selected?.activeIngredient ?? '';
-                input.unit.text = _resolveSelectedUnit(selected?.unit ?? 'Lt.');
+            : () async {
+                final picked = await _pickSupplyWithSearch(
+                  context,
+                  supplies,
+                  selectedSupplyId: input.selectedSupplyId,
+                );
+                if (picked == null) {
+                  return;
+                }
+                if (picked.cleared) {
+                  input.selectedSupplyId = null;
+                  input.productName.clear();
+                  input.activeIngredient.clear();
+                  input.dose.clear();
+                  input.unit.text = 'Lt.';
+                  return;
+                }
+                final selected = picked.supply;
+                if (selected == null) {
+                  return;
+                }
+                input.selectedSupplyId = selected.id;
+                input.productName.text = selected.commercialName;
+                input.activeIngredient.text = selected.activeIngredient ?? '';
+                input.unit.text = _resolveSelectedUnit(selected.unit);
               },
       );
     }
@@ -660,35 +740,126 @@ class _DoseLineEditorRow extends StatelessWidget {
     return 'Lt.';
   }
 
-  String? _resolveSelectedSupplyId(
-    String? rawId,
-    List<SupplyRegistryItem> options,
-  ) {
-    if (rawId == null || rawId.isEmpty) {
+  Future<_ProductPickerResult?> _pickSupplyWithSearch(
+    BuildContext context,
+    List<SupplyRegistryItem> options, {
+    required String? selectedSupplyId,
+  }) async {
+    final suppliesWithId = options
+        .where((item) => (item.id ?? '').isNotEmpty)
+        .toList(growable: false);
+    if (suppliesWithId.isEmpty) {
       return null;
     }
-    for (final item in options) {
-      if (item.id == rawId) {
-        return rawId;
-      }
-    }
-    return null;
-  }
 
-  SupplyRegistryItem? _findSupply(
-    String? id,
-    List<SupplyRegistryItem> options,
-  ) {
-    if (id == null || id.isEmpty) {
-      return null;
-    }
-    for (final item in options) {
-      if (item.id == id) {
-        return item;
-      }
-    }
-    return null;
+    final searchController = TextEditingController();
+    var query = '';
+    final result = await showDialog<_ProductPickerResult>(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            final normalizedQuery = query.trim().toLowerCase();
+            final filtered = suppliesWithId
+                .where((item) {
+                  if (normalizedQuery.isEmpty) {
+                    return true;
+                  }
+                  final commercial = item.commercialName.trim().toLowerCase();
+                  final ingredient = (item.activeIngredient ?? '')
+                      .trim()
+                      .toLowerCase();
+                  return commercial.contains(normalizedQuery) ||
+                      ingredient.contains(normalizedQuery);
+                })
+                .toList(growable: false);
+
+            return AlertDialog(
+              title: const Text('Seleccionar producto comercial'),
+              content: SizedBox(
+                width: 560,
+                height: 420,
+                child: Column(
+                  children: [
+                    TextField(
+                      controller: searchController,
+                      autofocus: true,
+                      decoration: const InputDecoration(
+                        labelText: 'Buscar producto',
+                        border: OutlineInputBorder(),
+                        prefixIcon: Icon(Icons.search),
+                      ),
+                      onChanged: (value) {
+                        setDialogState(() {
+                          query = value;
+                        });
+                      },
+                    ),
+                    const SizedBox(height: 10),
+                    Expanded(
+                      child: ListView(
+                        children: [
+                          if (selectedSupplyId != null &&
+                              selectedSupplyId.trim().isNotEmpty)
+                            ListTile(
+                              leading: const Icon(Icons.clear),
+                              title: const Text('Quitar producto seleccionado'),
+                              onTap: () => Navigator.of(
+                                dialogContext,
+                              ).pop(const _ProductPickerResult.cleared()),
+                            ),
+                          if (filtered.isEmpty)
+                            const Padding(
+                              padding: EdgeInsets.all(14),
+                              child: Text('Sin resultados para la busqueda.'),
+                            )
+                          else
+                            ...filtered.map((item) {
+                              final isSelected = item.id == selectedSupplyId;
+                              final subtitle = (item.activeIngredient ?? '')
+                                  .trim();
+                              return ListTile(
+                                title: Text(item.commercialName),
+                                subtitle: subtitle.isEmpty
+                                    ? Text('Unidad: ${item.unit}')
+                                    : Text('$subtitle | Unidad: ${item.unit}'),
+                                trailing: isSelected
+                                    ? const Icon(Icons.check_circle)
+                                    : null,
+                                onTap: () => Navigator.of(
+                                  dialogContext,
+                                ).pop(_ProductPickerResult.selected(item)),
+                              );
+                            }),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(dialogContext).pop(),
+                  child: const Text('Cerrar'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+    searchController.dispose();
+    return result;
   }
+}
+
+class _ProductPickerResult {
+  const _ProductPickerResult.selected(this.supply) : cleared = false;
+
+  const _ProductPickerResult.cleared() : supply = null, cleared = true;
+
+  final SupplyRegistryItem? supply;
+  final bool cleared;
 }
 
 class _DoseLineInput {

@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart'
     show TargetPlatform, defaultTargetPlatform, kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:google_sign_in/google_sign_in.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../core/constants/modules.dart';
 import '../core/services/access_controller.dart';
@@ -23,6 +24,7 @@ import '../features/recetario_agronomico/presentation/recipes_list_screen.dart';
 import '../features/super_admin/domain/models.dart';
 import '../features/super_admin/presentation/onboarding_claim_screen.dart';
 import '../features/super_admin/presentation/super_admin_home_screen.dart';
+import '../features/super_admin/presentation/super_admin_settings_screen.dart';
 import '../features/super_admin/presentation/tenant_detail_screen.dart';
 import '../features/super_admin/presentation/tenant_form_screen.dart';
 import '../features/super_admin/presentation/tenant_invite_form_screen.dart';
@@ -47,6 +49,7 @@ class AppRoutes {
   static const String reports = '/reports';
 
   static const String superAdminHome = '/super-admin';
+  static const String superAdminSettings = '/super-admin/settings';
   static const String superAdminTenants = '/super-admin/tenants';
   static const String superAdminTenantForm = '/super-admin/tenant-form';
   static const String superAdminTenantDetail = '/super-admin/tenant-detail';
@@ -89,6 +92,54 @@ class PasswordResetEligibility {
   bool get isAllowed => status == PasswordResetEligibilityStatus.allowed;
 }
 
+class TenantBlockingSupportContext {
+  const TenantBlockingSupportContext({
+    required this.blockReason,
+    required this.tenantId,
+    required this.tenantName,
+    required this.tenantStatus,
+    required this.tenantPlan,
+    required this.isPrincipalUser,
+    required this.requesterUid,
+    required this.requesterName,
+    required this.requesterEmail,
+    this.trialEndsAt,
+    this.systemAdminName,
+    this.systemAdminWhatsapp,
+  });
+
+  final TenantBlockReason blockReason;
+  final String tenantId;
+  final String tenantName;
+  final String tenantStatus;
+  final String tenantPlan;
+  final DateTime? trialEndsAt;
+  final bool isPrincipalUser;
+  final String requesterUid;
+  final String requesterName;
+  final String requesterEmail;
+  final String? systemAdminName;
+  final String? systemAdminWhatsapp;
+
+  bool get canContactSystemAdmin {
+    if (!isPrincipalUser) {
+      return false;
+    }
+    final raw = (systemAdminWhatsapp ?? '').trim();
+    if (raw.isEmpty) {
+      return false;
+    }
+    return raw.replaceAll(RegExp(r'\D'), '').isNotEmpty;
+  }
+}
+
+class _SystemAdminContact {
+  const _SystemAdminContact({required this.name, required this.whatsapp});
+
+  final String name;
+  final String whatsapp;
+}
+
 class SessionController extends ChangeNotifier {
   SessionController({
     required FirebaseAuth auth,
@@ -118,6 +169,7 @@ class SessionController extends ChangeNotifier {
   User? currentUser;
   SuperAdminProfile? superAdminProfile;
   String? blockingMessage;
+  TenantBlockingSupportContext? tenantBlockingSupportContext;
   String? warningMessage;
   bool needsOnboarding = false;
 
@@ -191,6 +243,17 @@ class SessionController extends ChangeNotifier {
           tenantName: tenantName,
           access: access,
         );
+      } on TenantBlockedException catch (error) {
+        if (isSuperAdmin) {
+          warningMessage = _tenantBlockedMessage(error);
+          session = null;
+        } else {
+          await _handleTenantBlocked(
+            tenantId: tenantId,
+            user: user,
+            error: error,
+          );
+        }
       } catch (error) {
         if (isSuperAdmin) {
           warningMessage = _errorText(error);
@@ -212,6 +275,7 @@ class SessionController extends ChangeNotifier {
     session = null;
     superAdminProfile = null;
     blockingMessage = null;
+    tenantBlockingSupportContext = null;
     warningMessage = null;
     needsOnboarding = false;
   }
@@ -316,7 +380,175 @@ class SessionController extends ChangeNotifier {
     return 'Mi espacio';
   }
 
+  Future<void> _handleTenantBlocked({
+    required String tenantId,
+    required User user,
+    required TenantBlockedException error,
+  }) async {
+    blockingMessage = _tenantBlockedMessage(error);
+
+    final isPrincipalUser = await _isPrincipalTenantUser(
+      tenantId: tenantId,
+      uid: user.uid,
+    );
+    if (!isPrincipalUser) {
+      tenantBlockingSupportContext = null;
+      return;
+    }
+
+    final systemAdminContact = await _loadSystemAdminWhatsappContact();
+    tenantBlockingSupportContext = TenantBlockingSupportContext(
+      blockReason: error.reason,
+      tenantId: error.tenantId,
+      tenantName: error.tenantName,
+      tenantStatus: error.tenantStatus,
+      tenantPlan: error.tenantPlan,
+      trialEndsAt: error.trialEndsAt,
+      isPrincipalUser: true,
+      requesterUid: user.uid,
+      requesterName: _resolveDefaultDisplayName(user),
+      requesterEmail: user.email?.trim() ?? '',
+      systemAdminName: systemAdminContact?.name,
+      systemAdminWhatsapp: systemAdminContact?.whatsapp,
+    );
+  }
+
+  Future<bool> _isPrincipalTenantUser({
+    required String tenantId,
+    required String uid,
+  }) async {
+    if (uid == tenantId) {
+      return true;
+    }
+    try {
+      final snapshot = await TenantPath.tenantUserRef(
+        _firestore,
+        tenantId,
+        uid,
+      ).get();
+      final role = (snapshot.data()?['role'] as String? ?? '')
+          .trim()
+          .toLowerCase();
+      return role == 'admin';
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<_SystemAdminContact?> _loadSystemAdminWhatsappContact() async {
+    try {
+      final supportDoc = await _firestore
+          .collection('system_config')
+          .doc('support')
+          .get();
+      final supportData = supportDoc.data();
+      if (supportData != null) {
+        final whatsapp = (supportData['whatsappContact'] as String? ?? '')
+            .trim();
+        if (whatsapp.isNotEmpty) {
+          final supportName = (supportData['supportName'] as String? ?? '')
+              .trim();
+          return _SystemAdminContact(
+            name: supportName.isNotEmpty
+                ? supportName
+                : 'Administrador del sistema',
+            whatsapp: whatsapp,
+          );
+        }
+      }
+    } catch (_) {}
+
+    try {
+      final snapshot = await _firestore
+          .collection('super_admins')
+          .where('status', isEqualTo: 'active')
+          .limit(20)
+          .get();
+      for (final doc in snapshot.docs) {
+        final data = doc.data();
+        final whatsapp = (data['whatsappContact'] as String? ?? '').trim();
+        if (whatsapp.isEmpty) {
+          continue;
+        }
+        final name = (data['name'] as String? ?? '').trim();
+        final email = (data['email'] as String? ?? '').trim();
+        return _SystemAdminContact(
+          name: name.isNotEmpty
+              ? name
+              : (email.isNotEmpty ? email : 'Administrador'),
+          whatsapp: whatsapp,
+        );
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  String _tenantBlockedMessage(TenantBlockedException error) {
+    switch (error.reason) {
+      case TenantBlockReason.suspended:
+        return 'La empresa "${error.tenantName}" se encuentra suspendida. '
+            'Contacta al administrador del sistema para reactivar el acceso.';
+      case TenantBlockReason.trialExpired:
+        final dueDate = error.trialEndsAt == null
+            ? ''
+            : ' Fecha de vencimiento: ${_formatDate(error.trialEndsAt!)}.';
+        return 'El periodo de prueba de la empresa "${error.tenantName}" '
+            'ha vencido.$dueDate Contacta al administrador del sistema.';
+    }
+  }
+
+  String _formatDate(DateTime value) {
+    final local = value.toLocal();
+    final day = local.day.toString().padLeft(2, '0');
+    final month = local.month.toString().padLeft(2, '0');
+    final year = local.year.toString();
+    return '$day/$month/$year';
+  }
+
+  Uri? buildTenantSupportWhatsappUri() {
+    final context = tenantBlockingSupportContext;
+    if (context == null || !context.canContactSystemAdmin) {
+      return null;
+    }
+    final adminDigits = (context.systemAdminWhatsapp ?? '').replaceAll(
+      RegExp(r'\D'),
+      '',
+    );
+    if (adminDigits.isEmpty) {
+      return null;
+    }
+
+    final reasonText = context.blockReason == TenantBlockReason.suspended
+        ? 'empresa suspendida'
+        : 'trial vencido';
+    final trialText = context.trialEndsAt == null
+        ? 'N/D'
+        : _formatDate(context.trialEndsAt!);
+    final emailText = context.requesterEmail.isEmpty
+        ? 'N/D'
+        : context.requesterEmail;
+    final message =
+        'Hola ${context.systemAdminName ?? 'Administrador'}, necesito asistencia '
+        'para reactivar el acceso.\n'
+        'Empresa: ${context.tenantName}\n'
+        'Tenant ID: ${context.tenantId}\n'
+        'Estado actual: ${context.tenantStatus}\n'
+        'Plan: ${context.tenantPlan}\n'
+        'Vencimiento trial: $trialText\n'
+        'Motivo: $reasonText\n'
+        'Solicitante: ${context.requesterName}\n'
+        'UID: ${context.requesterUid}\n'
+        'Email: $emailText';
+
+    return Uri.parse(
+      'https://wa.me/$adminDigits?text=${Uri.encodeComponent(message)}',
+    );
+  }
+
   String _errorText(Object error) {
+    if (error is TenantBlockedException) {
+      return _tenantBlockedMessage(error);
+    }
     if (error is FirebaseAuthException) {
       return error.message ?? 'Error de autenticacion.';
     }
@@ -571,6 +803,12 @@ class AppRouter {
                 : adminProfile.name,
           ),
         );
+      case AppRoutes.superAdminSettings:
+        return _superAdminGuardRoute(
+          settings: settings,
+          builder: (adminProfile) =>
+              SuperAdminSettingsScreen(adminUid: adminProfile.uid),
+        );
       case AppRoutes.superAdminTenants:
         return _superAdminGuardRoute(
           settings: settings,
@@ -733,6 +971,13 @@ class _RootScreen extends StatelessWidget {
 
     if (sessionController.blockingMessage != null &&
         !sessionController.isSuperAdmin) {
+      final supportContext = sessionController.tenantBlockingSupportContext;
+      if (supportContext != null) {
+        return _TenantBlockedSupportScreen(
+          sessionController: sessionController,
+          supportContext: supportContext,
+        );
+      }
       return BlockedScreen(
         title: 'Acceso bloqueado',
         message: sessionController.blockingMessage!,
@@ -959,6 +1204,197 @@ class _ModuleHomeScreen extends StatelessWidget {
               ),
             ...modules,
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class _TenantBlockedSupportScreen extends StatelessWidget {
+  const _TenantBlockedSupportScreen({
+    required this.sessionController,
+    required this.supportContext,
+  });
+
+  final SessionController sessionController;
+  final TenantBlockingSupportContext supportContext;
+
+  String get _title {
+    return supportContext.blockReason == TenantBlockReason.suspended
+        ? 'Empresa suspendida'
+        : 'Trial vencido';
+  }
+
+  String get _message {
+    if (supportContext.blockReason == TenantBlockReason.suspended) {
+      return 'La empresa fue suspendida. Solicita reactivacion al administrador del sistema.';
+    }
+    final trialDate = supportContext.trialEndsAt == null
+        ? 'N/D'
+        : _formatDate(supportContext.trialEndsAt!);
+    return 'El periodo de prueba finalizo el $trialDate. '
+        'Solicita renovacion al administrador del sistema.';
+  }
+
+  String _formatDate(DateTime value) {
+    final local = value.toLocal();
+    final day = local.day.toString().padLeft(2, '0');
+    final month = local.month.toString().padLeft(2, '0');
+    final year = local.year.toString();
+    return '$day/$month/$year';
+  }
+
+  Future<void> _openWhatsApp(BuildContext context) async {
+    final uri = sessionController.buildTenantSupportWhatsappUri();
+    if (uri == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'No hay un WhatsApp configurado para el Administrador del sistema.',
+          ),
+        ),
+      );
+      return;
+    }
+    final launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    if (!launched && context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('No se pudo abrir WhatsApp en este dispositivo.'),
+        ),
+      );
+    }
+  }
+
+  Widget _detailRow(
+    BuildContext context, {
+    required String label,
+    required String value,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 130,
+            child: Text(
+              '$label:',
+              style: Theme.of(
+                context,
+              ).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
+            ),
+          ),
+          Expanded(child: Text(value)),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final trialEndsAt = supportContext.trialEndsAt == null
+        ? 'N/D'
+        : _formatDate(supportContext.trialEndsAt!);
+    final adminName = (supportContext.systemAdminName ?? '').trim();
+    final adminWhatsapp = (supportContext.systemAdminWhatsapp ?? '').trim();
+    final adminLabel = adminName.isEmpty
+        ? 'Administrador del sistema'
+        : adminName;
+
+    return Scaffold(
+      body: Center(
+        child: ResponsivePage(
+          maxWidth: 760,
+          child: ListView(
+            shrinkWrap: true,
+            children: [
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(20),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          const Icon(Icons.warning_amber_rounded, size: 32),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Text(
+                              _title,
+                              style: Theme.of(context).textTheme.headlineSmall,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 10),
+                      Text(_message),
+                      const SizedBox(height: 18),
+                      _detailRow(
+                        context,
+                        label: 'Empresa',
+                        value: supportContext.tenantName,
+                      ),
+                      _detailRow(
+                        context,
+                        label: 'Tenant ID',
+                        value: supportContext.tenantId,
+                      ),
+                      _detailRow(
+                        context,
+                        label: 'Estado',
+                        value: supportContext.tenantStatus,
+                      ),
+                      _detailRow(
+                        context,
+                        label: 'Plan',
+                        value: supportContext.tenantPlan,
+                      ),
+                      _detailRow(
+                        context,
+                        label: 'Trial vence',
+                        value: trialEndsAt,
+                      ),
+                      const Divider(height: 24),
+                      _detailRow(
+                        context,
+                        label: 'Contacto sistema',
+                        value: adminLabel,
+                      ),
+                      _detailRow(
+                        context,
+                        label: 'WhatsApp',
+                        value: adminWhatsapp.isEmpty
+                            ? 'No configurado'
+                            : adminWhatsapp,
+                      ),
+                      const SizedBox(height: 14),
+                      Wrap(
+                        spacing: 10,
+                        runSpacing: 10,
+                        children: [
+                          FilledButton.icon(
+                            onPressed: supportContext.canContactSystemAdmin
+                                ? () => _openWhatsApp(context)
+                                : null,
+                            icon: const Icon(Icons.message_outlined),
+                            label: const Text(
+                              'Enviar WhatsApp al Administrador del sistema',
+                            ),
+                          ),
+                          OutlinedButton.icon(
+                            onPressed: sessionController.signOut,
+                            icon: const Icon(Icons.logout),
+                            label: const Text('Cerrar sesion'),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );

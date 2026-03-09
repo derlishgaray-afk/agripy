@@ -315,18 +315,84 @@ class RecipeEmissionData {
   }
 }
 
+class TankApplicationEntry {
+  const TankApplicationEntry({
+    required this.tankCount,
+    required this.tankCapacityLt,
+    required this.appliedVolumeLt,
+    required this.appliedTankEquivalent,
+    required this.appliedAt,
+    required this.operatorUid,
+  });
+
+  final double tankCount;
+  final double tankCapacityLt;
+  final double appliedVolumeLt;
+  final double appliedTankEquivalent;
+  final DateTime appliedAt;
+  final String operatorUid;
+
+  Map<String, dynamic> toMap() {
+    return {
+      'tankCount': tankCount,
+      'tankCapacityLt': tankCapacityLt,
+      'appliedVolumeLt': appliedVolumeLt,
+      'appliedTankEquivalent': appliedTankEquivalent,
+      'appliedAt': Timestamp.fromDate(appliedAt),
+      'operatorUid': operatorUid,
+    };
+  }
+
+  factory TankApplicationEntry.fromMap(Map<String, dynamic> map) {
+    return TankApplicationEntry(
+      tankCount: parseFlexibleDouble(map['tankCount']),
+      tankCapacityLt: parseFlexibleDouble(map['tankCapacityLt']),
+      appliedVolumeLt: parseFlexibleDouble(map['appliedVolumeLt']),
+      appliedTankEquivalent: parseFlexibleDouble(map['appliedTankEquivalent']),
+      appliedAt: parseFlexibleDateTime(map['appliedAt']) ?? DateTime.now(),
+      operatorUid: (map['operatorUid'] as String? ?? '').trim(),
+    );
+  }
+}
+
 class ExecutionData {
   const ExecutionData({
     required this.done,
     this.doneAt,
     this.operatorUid,
     this.operatorNotes,
+    this.appliedTankCount = 0,
+    this.appliedVolumeLt = 0,
+    this.tankApplications = const [],
   });
 
   final bool done;
   final DateTime? doneAt;
   final String? operatorUid;
   final String? operatorNotes;
+  final double appliedTankCount;
+  final double appliedVolumeLt;
+  final List<TankApplicationEntry> tankApplications;
+
+  ExecutionData copyWith({
+    bool? done,
+    DateTime? doneAt,
+    String? operatorUid,
+    String? operatorNotes,
+    double? appliedTankCount,
+    double? appliedVolumeLt,
+    List<TankApplicationEntry>? tankApplications,
+  }) {
+    return ExecutionData(
+      done: done ?? this.done,
+      doneAt: doneAt ?? this.doneAt,
+      operatorUid: operatorUid ?? this.operatorUid,
+      operatorNotes: operatorNotes ?? this.operatorNotes,
+      appliedTankCount: appliedTankCount ?? this.appliedTankCount,
+      appliedVolumeLt: appliedVolumeLt ?? this.appliedVolumeLt,
+      tankApplications: tankApplications ?? this.tankApplications,
+    );
+  }
 
   Map<String, dynamic> toMap() {
     return {
@@ -334,6 +400,11 @@ class ExecutionData {
       'doneAt': toTimestampOrNull(doneAt),
       'operatorUid': operatorUid,
       'operatorNotes': operatorNotes,
+      'appliedTankCount': appliedTankCount,
+      'appliedVolumeLt': appliedVolumeLt,
+      'tankApplications': tankApplications
+          .map((entry) => entry.toMap())
+          .toList(growable: false),
     };
   }
 
@@ -341,11 +412,27 @@ class ExecutionData {
     if (map == null) {
       return const ExecutionData(done: false);
     }
+    final applicationsRaw = map['tankApplications'];
+    final applications = <TankApplicationEntry>[];
+    if (applicationsRaw is List) {
+      for (final item in applicationsRaw) {
+        if (item is Map<String, dynamic>) {
+          applications.add(TankApplicationEntry.fromMap(item));
+        } else if (item is Map) {
+          applications.add(
+            TankApplicationEntry.fromMap(Map<String, dynamic>.from(item)),
+          );
+        }
+      }
+    }
     return ExecutionData(
       done: map['done'] == true,
       doneAt: parseFlexibleDateTime(map['doneAt']),
       operatorUid: map['operatorUid'] as String?,
       operatorNotes: map['operatorNotes'] as String?,
+      appliedTankCount: parseFlexibleDouble(map['appliedTankCount']),
+      appliedVolumeLt: parseFlexibleDouble(map['appliedVolumeLt']),
+      tankApplications: List.unmodifiable(applications),
     );
   }
 }
@@ -408,6 +495,29 @@ class ApplicationOrder {
   }
 
   factory ApplicationOrder.fromMap(Map<String, dynamic> map, {String? id}) {
+    final tankCapacityLt = parseFlexibleDouble(map['tankCapacityLt']);
+    final tankCount = parseFlexibleDouble(map['tankCount']);
+    final status = (map['status'] as String? ?? 'pending').trim();
+    var execution = ExecutionData.fromMap(
+      map['execution'] is Map<String, dynamic>
+          ? map['execution'] as Map<String, dynamic>
+          : map['execution'] is Map
+          ? Map<String, dynamic>.from(map['execution'] as Map)
+          : null,
+    );
+    final normalizedStatus = status.toLowerCase();
+    final isCompleted = normalizedStatus == 'completed' || execution.done;
+    if (isCompleted && execution.appliedTankCount <= 0 && tankCount > 0) {
+      final fallbackAppliedVolume = execution.appliedVolumeLt > 0
+          ? execution.appliedVolumeLt
+          : (tankCapacityLt > 0 ? tankCapacityLt * tankCount : 0.0);
+      execution = execution.copyWith(
+        done: true,
+        appliedTankCount: tankCount,
+        appliedVolumeLt: fallbackAppliedVolume,
+      );
+    }
+
     return ApplicationOrder(
       id: id,
       recipeId: (map['recipeId'] as String? ?? '').trim(),
@@ -419,21 +529,15 @@ class ApplicationOrder {
         map['affectedAreaHa'],
         fallback: parseFlexibleDouble(map['areaHa']),
       ),
-      tankCapacityLt: parseFlexibleDouble(map['tankCapacityLt']),
-      tankCount: parseFlexibleDouble(map['tankCount']),
+      tankCapacityLt: tankCapacityLt,
+      tankCount: tankCount,
       issuedAt: parseFlexibleDateTime(map['issuedAt']) ?? DateTime.now(),
       plannedDate: parseFlexibleDateTime(map['plannedDate']),
       engineerName: (map['engineerName'] as String? ?? '').trim(),
       operatorName: (map['operatorName'] as String? ?? '').trim(),
       assignedToUid: (map['assignedToUid'] as String? ?? '').trim(),
-      status: (map['status'] as String? ?? 'pending').trim(),
-      execution: ExecutionData.fromMap(
-        map['execution'] is Map<String, dynamic>
-            ? map['execution'] as Map<String, dynamic>
-            : map['execution'] is Map
-            ? Map<String, dynamic>.from(map['execution'] as Map)
-            : null,
-      ),
+      status: status,
+      execution: execution,
     );
   }
 }

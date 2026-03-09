@@ -12,7 +12,8 @@ class OperatorsRegistryScreen extends StatefulWidget {
   final AppSession session;
 
   @override
-  State<OperatorsRegistryScreen> createState() => _OperatorsRegistryScreenState();
+  State<OperatorsRegistryScreen> createState() =>
+      _OperatorsRegistryScreenState();
 }
 
 class _OperatorsRegistryScreenState extends State<OperatorsRegistryScreen> {
@@ -32,6 +33,10 @@ class _OperatorsRegistryScreenState extends State<OperatorsRegistryScreen> {
   }
 
   Future<void> _showOperatorDialog({OperatorRegistryItem? existing}) async {
+    if (existing?.isAuto == true) {
+      _showSnack('Este operador se gestiona desde Usuarios del tenant.');
+      return;
+    }
     final controller = TextEditingController(text: existing?.name ?? '');
     final isEditing = existing != null;
     await showDialog<void>(
@@ -82,6 +87,10 @@ class _OperatorsRegistryScreenState extends State<OperatorsRegistryScreen> {
   }
 
   Future<void> _deleteOperator(OperatorRegistryItem item) async {
+    if (item.isAuto) {
+      _showSnack('Este operador se gestiona desde Usuarios del tenant.');
+      return;
+    }
     final id = item.id;
     if (id == null || id.isEmpty) {
       return;
@@ -119,7 +128,9 @@ class _OperatorsRegistryScreenState extends State<OperatorsRegistryScreen> {
     if (!mounted) {
       return;
     }
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 
   @override
@@ -156,7 +167,28 @@ class _OperatorsRegistryScreenState extends State<OperatorsRegistryScreen> {
                 return Card(
                   child: ListTile(
                     title: Text(item.name),
-                    trailing: _canEdit
+                    subtitle: Padding(
+                      padding: const EdgeInsets.only(top: 6),
+                      child: Wrap(
+                        spacing: 8,
+                        runSpacing: 4,
+                        children: [
+                          Chip(
+                            visualDensity: VisualDensity.compact,
+                            label: Text(
+                              item.isAuto ? 'Automático' : 'Manual',
+                              style: Theme.of(context).textTheme.labelSmall,
+                            ),
+                          ),
+                          if (item.isAuto)
+                            const Chip(
+                              visualDensity: VisualDensity.compact,
+                              label: Text('Usuario secundario'),
+                            ),
+                        ],
+                      ),
+                    ),
+                    trailing: _canEdit && !item.isAuto
                         ? Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [

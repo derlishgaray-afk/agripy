@@ -22,6 +22,38 @@ DateTime? _parseDateTime(dynamic value) {
   return null;
 }
 
+enum TenantBlockReason { suspended, trialExpired }
+
+class TenantBlockedException implements Exception {
+  const TenantBlockedException({
+    required this.reason,
+    required this.tenantId,
+    required this.tenantName,
+    required this.tenantStatus,
+    required this.tenantPlan,
+    this.trialEndsAt,
+  });
+
+  final TenantBlockReason reason;
+  final String tenantId;
+  final String tenantName;
+  final String tenantStatus;
+  final String tenantPlan;
+  final DateTime? trialEndsAt;
+
+  String get userMessage {
+    switch (reason) {
+      case TenantBlockReason.suspended:
+        return 'La empresa esta suspendida temporalmente.';
+      case TenantBlockReason.trialExpired:
+        return 'El periodo de prueba de la empresa ya vencio.';
+    }
+  }
+
+  @override
+  String toString() => userMessage;
+}
+
 enum TenantRole { admin, engineer, operator }
 
 TenantRole tenantRoleFromString(String value) {
@@ -110,16 +142,36 @@ class AccessController {
     final tenantStatus = (statusRaw is String ? statusRaw : 'active')
         .trim()
         .toLowerCase();
-    if (tenantStatus != 'active') {
-      throw StateError('Empresa suspendida. Contactar al administrador.');
-    }
-
+    final tenantNameRaw = tenantData['name'];
+    final tenantName =
+        tenantNameRaw is String && tenantNameRaw.trim().isNotEmpty
+        ? tenantNameRaw.trim()
+        : tenantId;
     final planRaw = (tenantData['plan'] as String? ?? '').trim().toLowerCase();
     final trialEndsAt = _parseDateTime(tenantData['trialEndsAt']);
+
+    if (tenantStatus != 'active') {
+      throw TenantBlockedException(
+        reason: TenantBlockReason.suspended,
+        tenantId: tenantId,
+        tenantName: tenantName,
+        tenantStatus: tenantStatus,
+        tenantPlan: planRaw,
+        trialEndsAt: trialEndsAt,
+      );
+    }
+
     if (planRaw == 'trial' &&
         trialEndsAt != null &&
         trialEndsAt.isBefore(DateTime.now())) {
-      throw StateError('Tu prueba de 7 dias ha vencido.');
+      throw TenantBlockedException(
+        reason: TenantBlockReason.trialExpired,
+        tenantId: tenantId,
+        tenantName: tenantName,
+        tenantStatus: tenantStatus,
+        tenantPlan: planRaw,
+        trialEndsAt: trialEndsAt,
+      );
     }
 
     return tenantData;

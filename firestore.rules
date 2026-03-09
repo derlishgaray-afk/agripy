@@ -65,6 +65,13 @@ service cloud.firestore {
         : '';
     }
 
+    function requesterTenantDisplayName(tenantId) {
+      return requesterTenantUserExists(tenantId) &&
+        get(/databases/$(database)/documents/tenants/$(tenantId)/users/$(uid())).data.displayName is string
+        ? get(/databases/$(database)/documents/tenants/$(tenantId)/users/$(uid())).data.displayName
+        : '';
+    }
+
     function requesterTenantUserIsActive(tenantId) {
       return requesterTenantUserExists(tenantId) &&
         get(/databases/$(database)/documents/tenants/$(tenantId)/users/$(uid())).data.status == 'active';
@@ -88,6 +95,43 @@ service cloud.firestore {
 
     function requesterCanEditRecetario(tenantId) {
       return requesterTenantRole(tenantId) in ['admin', 'engineer'];
+    }
+
+    function isAnnulledOrderStatus(status) {
+      return status in ['annulled', 'anulado', 'cancelled'];
+    }
+
+    function operatorCanUpdateOwnOrderExecution(tenantId) {
+      return requesterHasModule(tenantId, 'recetario_agronomico') &&
+        requesterTenantRole(tenantId) == 'operator' &&
+        (
+          resource.data.assignedToUid == uid() ||
+          (
+            resource.data.operatorName is string &&
+            requesterTenantDisplayName(tenantId) != '' &&
+            resource.data.operatorName == requesterTenantDisplayName(tenantId)
+          )
+        ) &&
+        request.resource.data.assignedToUid == resource.data.assignedToUid &&
+        !isAnnulledOrderStatus(resource.data.status) &&
+        request.resource.data.status in ['pending', 'completed'] &&
+        request.resource.data.updatedBy == uid() &&
+        request.resource.data.diff(resource.data).changedKeys().hasOnly([
+          'status',
+          'execution',
+          'updatedBy',
+          'updatedAt',
+        ]) &&
+        request.resource.data.execution is map &&
+        request.resource.data.execution.operatorUid == uid() &&
+        request.resource.data.execution.diff(resource.data.execution).changedKeys().hasOnly([
+          'done',
+          'doneAt',
+          'operatorUid',
+          'appliedTankCount',
+          'appliedVolumeLt',
+          'tankApplications',
+        ]);
     }
 
     function hasOnboardingInviteCodeInRequest() {
@@ -196,6 +240,12 @@ service cloud.firestore {
       allow create, update, delete: if isSuperAdmin();
     }
 
+    match /system_config/{configId} {
+      allow get: if isSignedIn();
+      allow list: if false;
+      allow create, update, delete: if isSuperAdmin() && configId == 'support';
+    }
+
     match /auth_email_index/{emailLower} {
       allow get: if true;
       allow list: if false;
@@ -273,8 +323,11 @@ service cloud.firestore {
 
       match /application_orders/{orderId} {
         allow read: if isSuperAdmin() || requesterHasModule(tenantId, 'recetario_agronomico');
-        allow create, update, delete: if isSuperAdmin() ||
+        allow create, delete: if isSuperAdmin() ||
           (requesterHasModule(tenantId, 'recetario_agronomico') && requesterCanEditRecetario(tenantId));
+        allow update: if isSuperAdmin() ||
+          (requesterHasModule(tenantId, 'recetario_agronomico') && requesterCanEditRecetario(tenantId)) ||
+          operatorCanUpdateOwnOrderExecution(tenantId);
       }
 
       match /fields/{fieldId} {

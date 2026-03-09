@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 import '../../../core/constants/modules.dart';
@@ -37,18 +39,21 @@ class RecetarioCatalogRepo {
 
   Stream<List<FieldRegistryItem>> watchFields() {
     _assertModuleAccess();
-    return TenantPath.fieldsRef(_firestore, tenantId).snapshots().map((snapshot) {
-      final items = snapshot.docs
-          .map((doc) => FieldRegistryItem.fromMap(doc.data(), id: doc.id))
-          .toList(growable: true)
-        ..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+    return TenantPath.fieldsRef(_firestore, tenantId).snapshots().map((
+      snapshot,
+    ) {
+      final items =
+          snapshot.docs
+              .map((doc) => FieldRegistryItem.fromMap(doc.data(), id: doc.id))
+              .toList(growable: true)
+            ..sort(
+              (a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()),
+            );
       return List.unmodifiable(items);
     });
   }
 
-  Future<void> createField({
-    required String name,
-  }) async {
+  Future<void> createField({required String name}) async {
     _assertWriteAccess();
     final doc = TenantPath.fieldsRef(_firestore, tenantId).doc();
     await doc.set({
@@ -130,15 +135,18 @@ class RecetarioCatalogRepo {
 
   Stream<List<SupplyRegistryItem>> watchSupplies() {
     _assertModuleAccess();
-    return TenantPath.inputsRef(_firestore, tenantId).snapshots().map((snapshot) {
-      final items = snapshot.docs
-          .map((doc) => SupplyRegistryItem.fromMap(doc.data(), id: doc.id))
-          .toList(growable: true)
-        ..sort(
-          (a, b) => a.commercialName.toLowerCase().compareTo(
-            b.commercialName.toLowerCase(),
-          ),
-        );
+    return TenantPath.inputsRef(_firestore, tenantId).snapshots().map((
+      snapshot,
+    ) {
+      final items =
+          snapshot.docs
+              .map((doc) => SupplyRegistryItem.fromMap(doc.data(), id: doc.id))
+              .toList(growable: true)
+            ..sort(
+              (a, b) => a.commercialName.toLowerCase().compareTo(
+                b.commercialName.toLowerCase(),
+              ),
+            );
       return List.unmodifiable(items);
     });
   }
@@ -173,13 +181,112 @@ class RecetarioCatalogRepo {
 
   Stream<List<OperatorRegistryItem>> watchOperators() {
     _assertModuleAccess();
-    return TenantPath.operatorsRef(_firestore, tenantId).snapshots().map((snapshot) {
-      final items = snapshot.docs
-          .map((doc) => OperatorRegistryItem.fromMap(doc.data(), id: doc.id))
-          .toList(growable: true)
-        ..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
-      return List.unmodifiable(items);
-    });
+    final Stream<List<OperatorRegistryItem>> manualStream =
+        TenantPath.operatorsRef(_firestore, tenantId).snapshots().map((
+          snapshot,
+        ) {
+          final items = snapshot.docs
+              .map(
+                (doc) => OperatorRegistryItem.fromMap(doc.data(), id: doc.id),
+              )
+              .where((item) => item.name.isNotEmpty)
+              .toList(growable: false);
+          return List<OperatorRegistryItem>.unmodifiable(items);
+        });
+
+    final Stream<List<OperatorRegistryItem>> tenantUsersStream = _firestore
+        .collection(TenantPath.tenantUsersCollection(tenantId))
+        .where('role', isEqualTo: 'operator')
+        .snapshots()
+        .map((snapshot) {
+          final items = <OperatorRegistryItem>[];
+          for (final doc in snapshot.docs) {
+            final data = doc.data();
+            final status = (data['status'] as String? ?? 'active')
+                .trim()
+                .toLowerCase();
+            if (status != 'active') {
+              continue;
+            }
+            items.add(OperatorRegistryItem.fromTenantUser(doc.id, data));
+          }
+          return List<OperatorRegistryItem>.unmodifiable(items);
+        });
+
+    return _combineOperatorStreams(
+      manualStream: manualStream,
+      autoStream: tenantUsersStream,
+    );
+  }
+
+  Stream<List<OperatorRegistryItem>> _combineOperatorStreams({
+    required Stream<List<OperatorRegistryItem>> manualStream,
+    required Stream<List<OperatorRegistryItem>> autoStream,
+  }) {
+    List<OperatorRegistryItem>? manualItems;
+    List<OperatorRegistryItem>? autoItems;
+    StreamSubscription<List<OperatorRegistryItem>>? manualSub;
+    StreamSubscription<List<OperatorRegistryItem>>? autoSub;
+
+    late final StreamController<List<OperatorRegistryItem>> controller;
+    void emitIfReady() {
+      if (manualItems == null || autoItems == null || controller.isClosed) {
+        return;
+      }
+      controller.add(_mergeOperators(manualItems!, autoItems!));
+    }
+
+    controller = StreamController<List<OperatorRegistryItem>>(
+      onListen: () {
+        manualSub = manualStream.listen((items) {
+          manualItems = items;
+          emitIfReady();
+        }, onError: controller.addError);
+        autoSub = autoStream.listen((items) {
+          autoItems = items;
+          emitIfReady();
+        }, onError: controller.addError);
+      },
+      onCancel: () async {
+        await manualSub?.cancel();
+        await autoSub?.cancel();
+      },
+    );
+
+    return controller.stream;
+  }
+
+  List<OperatorRegistryItem> _mergeOperators(
+    List<OperatorRegistryItem> manualItems,
+    List<OperatorRegistryItem> autoItems,
+  ) {
+    final byName = <String, OperatorRegistryItem>{};
+
+    for (final item in manualItems) {
+      _addOperatorIfUnique(byName, item);
+    }
+    for (final item in autoItems) {
+      _addOperatorIfUnique(byName, item);
+    }
+
+    final merged = byName.values.toList(growable: false)
+      ..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+    return List.unmodifiable(merged);
+  }
+
+  void _addOperatorIfUnique(
+    Map<String, OperatorRegistryItem> byName,
+    OperatorRegistryItem item,
+  ) {
+    final key = _normalizeOperatorName(item.name);
+    if (key.isEmpty || byName.containsKey(key)) {
+      return;
+    }
+    byName[key] = item;
+  }
+
+  String _normalizeOperatorName(String value) {
+    return value.trim().toLowerCase().replaceAll(RegExp(r'\s+'), ' ');
   }
 
   Future<void> createOperator(String name) async {

@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 
 import '../../../app/router.dart';
@@ -33,6 +34,7 @@ class _EmitOrderScreenState extends State<EmitOrderScreen> {
   final _formKey = GlobalKey<FormState>();
   final _areaController = TextEditingController();
   final _affectedAreaController = TextEditingController();
+  final _affectedAreaFocusNode = FocusNode();
   final _tankCapacityController = TextEditingController();
   final _responsibleController = TextEditingController();
   DateTime? _plannedDate;
@@ -60,6 +62,7 @@ class _EmitOrderScreenState extends State<EmitOrderScreen> {
     _responsibleController.text = displayName.isEmpty ? 'Usuario' : displayName;
     _preferredOperatorName = displayName.isEmpty ? null : displayName;
     _affectedAreaController.addListener(_onTankInputsChanged);
+    _affectedAreaFocusNode.addListener(_onAffectedAreaFocusChanged);
     _tankCapacityController.addListener(_onTankInputsChanged);
     final repo = RecetarioRepo(
       firestore: FirebaseFirestore.instance,
@@ -103,6 +106,8 @@ class _EmitOrderScreenState extends State<EmitOrderScreen> {
   void dispose() {
     _areaController.dispose();
     _affectedAreaController.removeListener(_onTankInputsChanged);
+    _affectedAreaFocusNode.removeListener(_onAffectedAreaFocusChanged);
+    _affectedAreaFocusNode.dispose();
     _tankCapacityController.removeListener(_onTankInputsChanged);
     _affectedAreaController.dispose();
     _tankCapacityController.dispose();
@@ -182,6 +187,28 @@ class _EmitOrderScreenState extends State<EmitOrderScreen> {
     }
   }
 
+  void _onAffectedAreaFocusChanged() {
+    if (_affectedAreaFocusNode.hasFocus) {
+      return;
+    }
+    final normalized = _normalizeAffectedAreaText(_affectedAreaController.text);
+    if (_affectedAreaController.text != normalized) {
+      _affectedAreaController.text = normalized;
+    }
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
+  String _normalizeAffectedAreaText(String value) {
+    final trimmed = value.trim();
+    if (trimmed.isEmpty) {
+      return '';
+    }
+    final parsed = _parseDecimalThousands(trimmed);
+    return _formatDecimalThousands(parsed, decimals: 2);
+  }
+
   void _syncAreaWithSelectedLots() {
     final totalArea = _selectedLots.fold<double>(
       0,
@@ -191,7 +218,7 @@ class _EmitOrderScreenState extends State<EmitOrderScreen> {
       _areaController.clear();
       return;
     }
-    _areaController.text = totalArea.toStringAsFixed(2);
+    _areaController.text = _formatDecimalThousands(totalArea, decimals: 2);
   }
 
   Future<void> _pickLots() async {
@@ -263,12 +290,8 @@ class _EmitOrderScreenState extends State<EmitOrderScreen> {
   }
 
   double get _calculatedTankCount {
-    final affectedAreaHa = parseFlexibleDouble(
-      _affectedAreaController.text.trim(),
-    );
-    final tankCapacityLt = parseFlexibleDouble(
-      _tankCapacityController.text.trim(),
-    );
+    final affectedAreaHa = _parseDecimalThousands(_affectedAreaController.text);
+    final tankCapacityLt = _parseTankCapacityInt(_tankCapacityController.text);
     final waterVolumeLHa = widget.recipe.waterVolumeLHa;
     if (affectedAreaHa <= 0 || tankCapacityLt <= 0 || waterVolumeLHa <= 0) {
       return 0;
@@ -343,7 +366,29 @@ class _EmitOrderScreenState extends State<EmitOrderScreen> {
     }
     final plannedDate = _plannedDate!;
     final selectedLots = _selectedLots;
+    final selectedOperator = _selectedOperator;
+    final assignedToUid = selectedOperator?.linkedUserUid?.trim() ?? '';
     final plotName = selectedLots.map((lot) => lot.name).join(', ');
+    final areaHa = _parseDecimalThousands(_areaController.text);
+    final affectedAreaHa = _parseDecimalThousands(_affectedAreaController.text);
+    if (affectedAreaHa <= 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('La superficie afectada debe ser mayor a cero.'),
+        ),
+      );
+      return;
+    }
+    if (areaHa > 0 && affectedAreaHa > areaHa) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'La superficie afectada no puede superar la superficie total.',
+          ),
+        ),
+      );
+      return;
+    }
 
     setState(() {
       _submitting = true;
@@ -356,17 +401,13 @@ class _EmitOrderScreenState extends State<EmitOrderScreen> {
           recipe: widget.recipe,
           farmName: _selectedField!.name,
           plotName: plotName,
-          areaHa: parseFlexibleDouble(_areaController.text.trim()),
-          affectedAreaHa: parseFlexibleDouble(
-            _affectedAreaController.text.trim(),
-          ),
-          tankCapacityLt: parseFlexibleDouble(
-            _tankCapacityController.text.trim(),
-          ),
+          areaHa: areaHa,
+          affectedAreaHa: affectedAreaHa,
+          tankCapacityLt: _parseTankCapacityInt(_tankCapacityController.text),
           plannedDate: plannedDate,
           engineerName: _responsibleController.text.trim(),
-          operatorName: _selectedOperator!.name,
-          assignedToUid: widget.session.uid,
+          operatorName: selectedOperator!.name,
+          assignedToUid: assignedToUid,
         );
       } else {
         await _usecase.emitAndSharePdf(
@@ -374,17 +415,13 @@ class _EmitOrderScreenState extends State<EmitOrderScreen> {
           recipe: widget.recipe,
           farmName: _selectedField!.name,
           plotName: plotName,
-          areaHa: parseFlexibleDouble(_areaController.text.trim()),
-          affectedAreaHa: parseFlexibleDouble(
-            _affectedAreaController.text.trim(),
-          ),
-          tankCapacityLt: parseFlexibleDouble(
-            _tankCapacityController.text.trim(),
-          ),
+          areaHa: areaHa,
+          affectedAreaHa: affectedAreaHa,
+          tankCapacityLt: _parseTankCapacityInt(_tankCapacityController.text),
           plannedDate: plannedDate,
           engineerName: _responsibleController.text.trim(),
-          operatorName: _selectedOperator!.name,
-          assignedToUid: widget.session.uid,
+          operatorName: selectedOperator!.name,
+          assignedToUid: assignedToUid,
         );
       }
       if (!mounted) {
@@ -545,21 +582,34 @@ class _EmitOrderScreenState extends State<EmitOrderScreen> {
               const SizedBox(height: 12),
               TextFormField(
                 controller: _affectedAreaController,
+                focusNode: _affectedAreaFocusNode,
                 keyboardType: const TextInputType.numberWithOptions(
                   decimal: true,
                 ),
+                inputFormatters: [
+                  FilteringTextInputFormatter.allow(RegExp(r'[0-9,\.]')),
+                  const _ThousandsDecimalInputFormatter(maxDecimals: 2),
+                ],
                 decoration: const InputDecoration(
                   labelText: 'Superficie afectada (ha)',
                   border: OutlineInputBorder(),
                 ),
-                validator: _requiredValidator,
+                autovalidateMode: AutovalidateMode.onUserInteraction,
+                onChanged: (_) {
+                  if (mounted) {
+                    setState(() {});
+                  }
+                },
+                validator: _affectedAreaValidator,
               ),
               const SizedBox(height: 12),
               TextFormField(
                 controller: _tankCapacityController,
-                keyboardType: const TextInputType.numberWithOptions(
-                  decimal: true,
-                ),
+                keyboardType: TextInputType.number,
+                inputFormatters: [
+                  FilteringTextInputFormatter.digitsOnly,
+                  const _ThousandsIntInputFormatter(),
+                ],
                 decoration: const InputDecoration(
                   labelText: 'Capacidad Lt tanque',
                   border: OutlineInputBorder(),
@@ -682,5 +732,146 @@ class _EmitOrderScreenState extends State<EmitOrderScreen> {
       return 'Campo obligatorio';
     }
     return null;
+  }
+
+  String? _affectedAreaValidator(String? value) {
+    final text = value?.trim() ?? '';
+    if (text.isEmpty) {
+      return 'Campo obligatorio';
+    }
+    final affectedArea = _parseDecimalThousands(text);
+    if (affectedArea <= 0) {
+      return 'Debe ser mayor a cero';
+    }
+    final totalArea = _parseDecimalThousands(_areaController.text);
+    if (totalArea > 0 && affectedArea > totalArea) {
+      return 'No puede superar la superficie (ha)';
+    }
+    return null;
+  }
+
+  double _parseTankCapacityInt(String? value) {
+    final digitsOnly = (value ?? '').replaceAll(RegExp(r'[^0-9]'), '');
+    if (digitsOnly.isEmpty) {
+      return 0;
+    }
+    return double.tryParse(digitsOnly) ?? 0;
+  }
+
+  String _formatDecimalThousands(num value, {int decimals = 2}) {
+    final fixed = value.toStringAsFixed(decimals);
+    final parts = fixed.split('.');
+    final intPart = parts.first.replaceAllMapped(
+      RegExp(r'\B(?=(\d{3})+(?!\d))'),
+      (_) => '.',
+    );
+    if (decimals <= 0 || parts.length < 2) {
+      return intPart;
+    }
+    return '$intPart,${parts[1]}';
+  }
+
+  double _parseDecimalThousands(String? value) {
+    final raw = (value ?? '').trim();
+    if (raw.isEmpty) {
+      return 0;
+    }
+    final compact = raw.replaceAll(RegExp(r'\s+'), '');
+    final lastComma = compact.lastIndexOf(',');
+    final lastDot = compact.lastIndexOf('.');
+    String normalized;
+    if (lastComma >= 0 && lastDot >= 0) {
+      if (lastComma > lastDot) {
+        normalized = compact.replaceAll('.', '').replaceAll(',', '.');
+      } else {
+        normalized = compact.replaceAll(',', '');
+      }
+    } else if (lastComma >= 0) {
+      normalized = compact.replaceAll('.', '').replaceAll(',', '.');
+    } else {
+      normalized = compact.replaceAll(',', '');
+    }
+    return double.tryParse(normalized) ?? 0;
+  }
+}
+
+class _ThousandsIntInputFormatter extends TextInputFormatter {
+  const _ThousandsIntInputFormatter();
+
+  @override
+  TextEditingValue formatEditUpdate(
+    TextEditingValue oldValue,
+    TextEditingValue newValue,
+  ) {
+    final digits = newValue.text.replaceAll(RegExp(r'[^0-9]'), '');
+    if (digits.isEmpty) {
+      return const TextEditingValue(text: '');
+    }
+    final formatted = digits.replaceAllMapped(
+      RegExp(r'\B(?=(\d{3})+(?!\d))'),
+      (_) => '.',
+    );
+    return TextEditingValue(
+      text: formatted,
+      selection: TextSelection.collapsed(offset: formatted.length),
+    );
+  }
+}
+
+class _ThousandsDecimalInputFormatter extends TextInputFormatter {
+  const _ThousandsDecimalInputFormatter({this.maxDecimals = 2});
+
+  final int maxDecimals;
+
+  @override
+  TextEditingValue formatEditUpdate(
+    TextEditingValue oldValue,
+    TextEditingValue newValue,
+  ) {
+    final raw = newValue.text.replaceAll(RegExp(r'[^0-9,\.]'), '');
+    if (raw.isEmpty) {
+      return const TextEditingValue(text: '');
+    }
+
+    final lastComma = raw.lastIndexOf(',');
+    final lastDot = raw.lastIndexOf('.');
+    final decimalIndex = lastComma > lastDot ? lastComma : lastDot;
+
+    String intDigits;
+    String decimalDigits = '';
+    var hasDecimalSeparator = false;
+
+    if (decimalIndex >= 0) {
+      hasDecimalSeparator = true;
+      intDigits = raw
+          .substring(0, decimalIndex)
+          .replaceAll(RegExp(r'[^0-9]'), '');
+      decimalDigits = raw
+          .substring(decimalIndex + 1)
+          .replaceAll(RegExp(r'[^0-9]'), '');
+      if (decimalDigits.length > maxDecimals) {
+        decimalDigits = decimalDigits.substring(0, maxDecimals);
+      }
+    } else {
+      intDigits = raw.replaceAll(RegExp(r'[^0-9]'), '');
+    }
+
+    if (intDigits.isEmpty) {
+      intDigits = '0';
+    }
+
+    final intFormatted = intDigits.replaceAllMapped(
+      RegExp(r'\B(?=(\d{3})+(?!\d))'),
+      (_) => '.',
+    );
+
+    final text = hasDecimalSeparator
+        ? '$intFormatted,$decimalDigits'
+        : intFormatted;
+
+    return TextEditingValue(
+      text: text,
+      selection: TextSelection.collapsed(offset: text.length),
+    );
   }
 }

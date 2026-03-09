@@ -32,11 +32,15 @@ class SuperAdminHomeScreen extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 8),
-            const Card(
+            Card(
               child: ListTile(
-                leading: Icon(Icons.settings_outlined),
-                title: Text('Configuracion'),
-                subtitle: Text('Disponible en siguientes iteraciones'),
+                leading: const Icon(Icons.settings_outlined),
+                title: const Text('Configuracion'),
+                subtitle: const Text('Registrar contacto de WhatsApp'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => Navigator.of(
+                  context,
+                ).pushNamed(AppRoutes.superAdminSettings),
               ),
             ),
           ],

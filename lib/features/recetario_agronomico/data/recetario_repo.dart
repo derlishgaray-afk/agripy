@@ -35,6 +35,32 @@ class RecetarioRepo {
     }
   }
 
+  void _assertOrderExecutionAccess() {
+    _assertModuleAccess();
+    final role = _access.role;
+    if (role != TenantRole.admin &&
+        role != TenantRole.engineer &&
+        role != TenantRole.operator) {
+      throw StateError('Tu rol no puede actualizar aplicaciones.');
+    }
+  }
+
+  bool _operatorCanHandleOrder(ApplicationOrder order) {
+    if (order.assignedToUid.trim() == currentUid) {
+      return true;
+    }
+    if (_access.role != TenantRole.operator) {
+      return false;
+    }
+    final currentName = _normalizeName(_access.displayName);
+    final operatorName = _normalizeName(order.operatorName);
+    return currentName.isNotEmpty && operatorName == currentName;
+  }
+
+  String _normalizeName(String value) {
+    return value.trim().toLowerCase().replaceAll(RegExp(r'\s+'), ' ');
+  }
+
   Stream<List<Recipe>> watchRecipes({String? status}) {
     _assertModuleAccess();
     final normalizedStatus = status?.trim().toLowerCase();
@@ -224,21 +250,97 @@ class RecetarioRepo {
     });
   }
 
-  Future<void> markOrderCompleted({
+  Future<void> registerOrderTankApplication({
     required String orderId,
-    required DateTime completedAt,
+    required DateTime appliedAt,
+    required double appliedTankCount,
+    required double tankCapacityLt,
   }) async {
-    _assertWriteAccess();
+    _assertOrderExecutionAccess();
     if (orderId.trim().isEmpty) {
       throw StateError('Orden sin id.');
     }
-    await TenantPath.applicationOrderRef(_firestore, tenantId, orderId).update({
-      'status': 'completed',
-      'execution.done': true,
-      'execution.doneAt': Timestamp.fromDate(completedAt),
-      'execution.operatorUid': currentUid,
-      'updatedBy': currentUid,
-      'updatedAt': Timestamp.now(),
+    if (appliedTankCount <= 0) {
+      throw StateError(
+        'La cantidad de tanques aplicados debe ser mayor a cero.',
+      );
+    }
+    if (tankCapacityLt <= 0) {
+      throw StateError('La capacidad del tanque debe ser mayor a cero.');
+    }
+
+    final orderRef = TenantPath.applicationOrderRef(
+      _firestore,
+      tenantId,
+      orderId,
+    );
+    await _firestore.runTransaction((transaction) async {
+      final snapshot = await transaction.get(orderRef);
+      final data = snapshot.data();
+      if (data == null) {
+        throw StateError('Orden no encontrada.');
+      }
+      final order = ApplicationOrder.fromMap(data, id: snapshot.id);
+      if (_access.role == TenantRole.operator &&
+          !_operatorCanHandleOrder(order)) {
+        throw StateError(
+          'Solo puedes actualizar aplicaciones asignadas a tu usuario.',
+        );
+      }
+      final status = order.status.trim().toLowerCase();
+      if (status == 'annulled' ||
+          status == 'anulado' ||
+          status == 'cancelled') {
+        throw StateError('No se puede registrar avance en una orden anulada.');
+      }
+
+      final plannedTankCount = order.tankCount;
+      if (plannedTankCount <= 0 || order.tankCapacityLt <= 0) {
+        throw StateError('La orden no tiene tanque total previsto valido.');
+      }
+
+      final previousVolume = order.execution.appliedVolumeLt > 0
+          ? order.execution.appliedVolumeLt
+          : order.execution.appliedTankCount * order.tankCapacityLt;
+      final addedVolume = appliedTankCount * tankCapacityLt;
+      final totalVolume = previousVolume + addedVolume;
+      final rawAppliedTankEquivalent = totalVolume / order.tankCapacityLt;
+      final appliedTankEquivalent = rawAppliedTankEquivalent
+          .clamp(0, plannedTankCount)
+          .toDouble();
+      final completed = appliedTankEquivalent >= plannedTankCount - 0.000001;
+
+      final progress = order.execution.tankApplications.toList(growable: true)
+        ..add(
+          TankApplicationEntry(
+            tankCount: appliedTankCount,
+            tankCapacityLt: tankCapacityLt,
+            appliedVolumeLt: addedVolume,
+            appliedTankEquivalent: addedVolume / order.tankCapacityLt,
+            appliedAt: appliedAt,
+            operatorUid: currentUid,
+          ),
+        );
+
+      final updatePayload = <String, dynamic>{
+        'status': completed ? 'completed' : 'pending',
+        'execution.done': completed,
+        'execution.operatorUid': currentUid,
+        'execution.appliedTankCount': appliedTankEquivalent,
+        'execution.appliedVolumeLt': totalVolume,
+        'execution.tankApplications': progress
+            .map((entry) => entry.toMap())
+            .toList(growable: false),
+        'updatedBy': currentUid,
+        'updatedAt': Timestamp.now(),
+      };
+      if (completed) {
+        updatePayload['execution.doneAt'] = Timestamp.fromDate(appliedAt);
+      } else {
+        updatePayload['execution.doneAt'] = FieldValue.delete();
+      }
+
+      transaction.update(orderRef, updatePayload);
     });
   }
 
@@ -254,6 +356,43 @@ class RecetarioRepo {
       'execution.operatorUid': FieldValue.delete(),
       'updatedBy': currentUid,
       'updatedAt': Timestamp.now(),
+    });
+  }
+
+  Future<void> deleteAnnulledOrderAndRecipe({
+    required String orderId,
+    required String recipeId,
+  }) async {
+    _assertWriteAccess();
+    if (orderId.trim().isEmpty) {
+      throw StateError('Orden sin id.');
+    }
+    if (recipeId.trim().isEmpty) {
+      throw StateError('Receta emitida sin id.');
+    }
+
+    final orderRef = TenantPath.applicationOrderRef(
+      _firestore,
+      tenantId,
+      orderId,
+    );
+    final recipeRef = TenantPath.recipeRef(_firestore, tenantId, recipeId);
+    await _firestore.runTransaction((transaction) async {
+      final orderSnapshot = await transaction.get(orderRef);
+      final orderData = orderSnapshot.data();
+      if (orderData == null) {
+        throw StateError('Orden no encontrada.');
+      }
+      final order = ApplicationOrder.fromMap(orderData, id: orderSnapshot.id);
+      final status = order.status.trim().toLowerCase();
+      final isAnnulled =
+          status == 'annulled' || status == 'anulado' || status == 'cancelled';
+      if (!isAnnulled) {
+        throw StateError('Solo se puede eliminar una orden anulada.');
+      }
+
+      transaction.delete(orderRef);
+      transaction.delete(recipeRef);
     });
   }
 }

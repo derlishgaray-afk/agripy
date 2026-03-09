@@ -33,15 +33,88 @@ class UserTenantConflictException implements Exception {
   }
 }
 
+class SystemSupportContact {
+  const SystemSupportContact({required this.name, required this.whatsapp});
+
+  final String name;
+  final String whatsapp;
+}
+
 class SuperAdminRepo {
   SuperAdminRepo(this._firestore);
 
   final FirebaseFirestore _firestore;
 
+  CollectionReference<Map<String, dynamic>> get _superAdmins =>
+      _firestore.collection('super_admins');
+  DocumentReference<Map<String, dynamic>> get _systemSupportConfig =>
+      _firestore.collection('system_config').doc('support');
   CollectionReference<Map<String, dynamic>> get _tenants =>
       _firestore.collection('tenants');
   CollectionReference<Map<String, dynamic>> get _tenantInvites =>
       _firestore.collection('tenant_user_invites');
+
+  Future<SuperAdminProfile?> getSuperAdminProfile(String uid) async {
+    final normalizedUid = uid.trim();
+    if (normalizedUid.isEmpty) {
+      throw StateError('UID de super admin invalido.');
+    }
+    final snapshot = await _superAdmins.doc(normalizedUid).get();
+    final data = snapshot.data();
+    if (data == null) {
+      return null;
+    }
+    return SuperAdminProfile.fromMap(snapshot.id, data);
+  }
+
+  Future<void> updateSuperAdminWhatsappContact({
+    required String uid,
+    required String whatsappContact,
+  }) async {
+    final normalizedUid = uid.trim();
+    if (normalizedUid.isEmpty) {
+      throw StateError('UID de super admin invalido.');
+    }
+
+    await _superAdmins.doc(normalizedUid).set({
+      'whatsappContact': whatsappContact.trim(),
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+  }
+
+  Future<SystemSupportContact?> getSystemSupportContact() async {
+    final snapshot = await _systemSupportConfig.get();
+    final data = snapshot.data();
+    if (data == null) {
+      return null;
+    }
+    final whatsapp = (data['whatsappContact'] as String? ?? '').trim();
+    if (whatsapp.isEmpty) {
+      return null;
+    }
+    final name = (data['supportName'] as String? ?? '').trim();
+    return SystemSupportContact(
+      name: name.isNotEmpty ? name : 'Administrador del sistema',
+      whatsapp: whatsapp,
+    );
+  }
+
+  Future<void> updateSystemSupportContact({
+    required String updatedByUid,
+    required String supportName,
+    required String whatsappContact,
+  }) async {
+    final uid = updatedByUid.trim();
+    if (uid.isEmpty) {
+      throw StateError('UID de super admin invalido.');
+    }
+    await _systemSupportConfig.set({
+      'supportName': supportName.trim(),
+      'whatsappContact': whatsappContact.trim(),
+      'updatedByUid': uid,
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+  }
 
   Stream<List<TenantModel>> watchTenants() {
     return _tenants.orderBy('createdAt', descending: true).snapshots().map((
@@ -272,7 +345,10 @@ class SuperAdminRepo {
       throw UserTenantConflictException(existingTenantId);
     }
 
-    final tenantUserRef = _tenants.doc(invite.tenantId).collection('users').doc(uid);
+    final tenantUserRef = _tenants
+        .doc(invite.tenantId)
+        .collection('users')
+        .doc(uid);
     final now = Timestamp.now();
     final batch = _firestore.batch();
 

@@ -136,18 +136,26 @@ class OperatorRegistryItem {
   const OperatorRegistryItem({
     this.id,
     required this.name,
+    this.isAuto = false,
+    this.linkedUserUid,
   });
 
   final String? id;
   final String name;
+  final bool isAuto;
+  final String? linkedUserUid;
 
   OperatorRegistryItem copyWith({
     String? id,
     String? name,
+    bool? isAuto,
+    String? linkedUserUid,
   }) {
     return OperatorRegistryItem(
       id: id ?? this.id,
       name: name ?? this.name,
+      isAuto: isAuto ?? this.isAuto,
+      linkedUserUid: linkedUserUid ?? this.linkedUserUid,
     );
   }
 
@@ -161,6 +169,25 @@ class OperatorRegistryItem {
     return OperatorRegistryItem(
       id: id,
       name: (map['name'] as String? ?? '').trim(),
+      isAuto: false,
+      linkedUserUid: null,
+    );
+  }
+
+  factory OperatorRegistryItem.fromTenantUser(
+    String uid,
+    Map<String, dynamic> map,
+  ) {
+    final displayName = (map['displayName'] as String? ?? '').trim();
+    final email = (map['email'] as String? ?? '').trim();
+    final resolvedName = displayName.isNotEmpty
+        ? displayName
+        : (email.isNotEmpty ? email : uid);
+    return OperatorRegistryItem(
+      id: 'user:$uid',
+      name: resolvedName,
+      isAuto: true,
+      linkedUserUid: uid,
     );
   }
 }

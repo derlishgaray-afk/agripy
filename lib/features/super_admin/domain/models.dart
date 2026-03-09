@@ -152,12 +152,14 @@ class SuperAdminProfile {
     required this.email,
     required this.name,
     required this.status,
+    this.whatsappContact = '',
   });
 
   final String uid;
   final String email;
   final String name;
   final AccountStatus status;
+  final String whatsappContact;
 
   bool get isActive => status == AccountStatus.active;
 
@@ -167,6 +169,7 @@ class SuperAdminProfile {
       email: (map['email'] as String? ?? '').trim(),
       name: (map['name'] as String? ?? '').trim(),
       status: accountStatusFromString((map['status'] as String? ?? 'active')),
+      whatsappContact: (map['whatsappContact'] as String? ?? '').trim(),
     );
   }
 }
