@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 
 import '../core/services/access_controller.dart';
 import '../core/services/tenant_resolver.dart';
@@ -138,6 +139,26 @@ class _AgripyAppState extends State<AgripyApp> {
           theme: _lightTheme,
           darkTheme: _darkTheme,
           themeMode: _themeController.themeMode,
+          locale: const Locale('es', 'PY'),
+          supportedLocales: const [
+            Locale('es'),
+            Locale('es', 'PY'),
+          ],
+          localizationsDelegates: const [
+            GlobalMaterialLocalizations.delegate,
+            GlobalWidgetsLocalizations.delegate,
+            GlobalCupertinoLocalizations.delegate,
+          ],
+          builder: (context, child) {
+            if (child == null) {
+              return const SizedBox.shrink();
+            }
+            final mediaQuery = MediaQuery.of(context);
+            return MediaQuery(
+              data: mediaQuery.copyWith(alwaysUse24HourFormat: true),
+              child: child,
+            );
+          },
           onGenerateRoute: router.onGenerateRoute,
           initialRoute: AppRoutes.home,
         );

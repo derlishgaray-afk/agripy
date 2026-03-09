@@ -255,6 +255,7 @@ class RecetarioRepo {
     required DateTime appliedAt,
     required double appliedTankCount,
     required double tankCapacityLt,
+    required String plotName,
   }) async {
     _assertOrderExecutionAccess();
     if (orderId.trim().isEmpty) {
@@ -267,6 +268,9 @@ class RecetarioRepo {
     }
     if (tankCapacityLt <= 0) {
       throw StateError('La capacidad del tanque debe ser mayor a cero.');
+    }
+    if (plotName.trim().isEmpty) {
+      throw StateError('Debes seleccionar el lote aplicado.');
     }
 
     final orderRef = TenantPath.applicationOrderRef(
@@ -302,9 +306,18 @@ class RecetarioRepo {
       final previousVolume = order.execution.appliedVolumeLt > 0
           ? order.execution.appliedVolumeLt
           : order.execution.appliedTankCount * order.tankCapacityLt;
+      final currentAppliedEquivalent = previousVolume / order.tankCapacityLt;
       final addedVolume = appliedTankCount * tankCapacityLt;
       final totalVolume = previousVolume + addedVolume;
       final rawAppliedTankEquivalent = totalVolume / order.tankCapacityLt;
+      if (rawAppliedTankEquivalent > plannedTankCount + 0.000001) {
+        final remaining = (plannedTankCount - currentAppliedEquivalent)
+            .clamp(0, plannedTankCount)
+            .toDouble();
+        throw StateError(
+          'La cantidad registrada excede el pendiente (${remaining.toStringAsFixed(2)} tanque(s)).',
+        );
+      }
       final appliedTankEquivalent = rawAppliedTankEquivalent
           .clamp(0, plannedTankCount)
           .toDouble();
@@ -319,6 +332,7 @@ class RecetarioRepo {
             appliedTankEquivalent: addedVolume / order.tankCapacityLt,
             appliedAt: appliedAt,
             operatorUid: currentUid,
+            plotName: plotName.trim(),
           ),
         );
 

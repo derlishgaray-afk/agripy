@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 
 import '../../../app/router.dart';
 import '../../../core/services/access_controller.dart';
+import '../../../core/services/tenant_path.dart';
 import '../../../shared/widgets/responsive_page.dart';
 import '../data/recetario_repo.dart';
 import '../domain/models.dart';
@@ -23,6 +24,8 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
   late final RecetarioRepo _repo;
   final RecetarioPngService _pngService = RecetarioPngService();
   final RecetarioShareService _shareService = RecetarioShareService();
+  final Map<String, Map<String, double>> _fieldLotAreaCache =
+      <String, Map<String, double>>{};
   String _statusFilter = 'all';
   String _emittedStateFilter = 'all';
   String? _sharingRecipeId;
@@ -500,6 +503,192 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
     return value.trim().toLowerCase().replaceAll(RegExp(r'\s+'), ' ');
   }
 
+  List<String> _splitUniquePlots(String raw) {
+    final cleanedRaw = raw.trim();
+    if (cleanedRaw.isEmpty) {
+      return const ['Sin lote'];
+    }
+    final tokens = <String>{};
+    for (final part in cleanedRaw.split(RegExp(r'[,;|/]+'))) {
+      final token = part.trim();
+      if (token.isNotEmpty) {
+        tokens.add(token);
+      }
+    }
+    if (tokens.isEmpty) {
+      return const ['Sin lote'];
+    }
+    return tokens.toList(growable: false);
+  }
+
+  String _normalizePlotKey(String value) {
+    return value.trim().toLowerCase().replaceAll(RegExp(r'\s+'), ' ');
+  }
+
+  Future<Map<String, double>> _loadFieldLotAreasForFarm(String farmName) async {
+    final farmKey = _normalizePlotKey(farmName);
+    if (farmKey.isEmpty) {
+      return const <String, double>{};
+    }
+    final cached = _fieldLotAreaCache[farmKey];
+    if (cached != null) {
+      return cached;
+    }
+
+    final result = <String, double>{};
+    try {
+      final snapshot = await TenantPath.fieldsRef(
+        FirebaseFirestore.instance,
+        widget.session.tenantId,
+      ).get();
+      for (final doc in snapshot.docs) {
+        final data = doc.data();
+        final name = _normalizePlotKey((data['name'] as String? ?? ''));
+        if (name != farmKey) {
+          continue;
+        }
+        final lotsRaw = data['lots'];
+        if (lotsRaw is! List) {
+          continue;
+        }
+        for (final item in lotsRaw) {
+          if (item is! Map) {
+            continue;
+          }
+          final lotName = _normalizePlotKey(item['name'] as String? ?? '');
+          if (lotName.isEmpty) {
+            continue;
+          }
+          final area = parseFlexibleDouble(item['areaHa']);
+          if (area > 0) {
+            result[lotName] = area;
+          }
+        }
+        break;
+      }
+    } catch (_) {}
+
+    final immutable = Map<String, double>.unmodifiable(result);
+    _fieldLotAreaCache[farmKey] = immutable;
+    return immutable;
+  }
+
+  Future<Map<String, double>> _resolveOrderPlotAreas(ApplicationOrder order) async {
+    final plots = _splitUniquePlots(order.plotName);
+    final knownByField = await _loadFieldLotAreasForFarm(order.farmName);
+    final result = <String, double>{};
+    var knownTotal = 0.0;
+    final unresolved = <String>[];
+
+    for (final plot in plots) {
+      final key = _normalizePlotKey(plot);
+      final area = knownByField[key] ?? 0;
+      if (area > 0) {
+        result[plot] = area;
+        knownTotal += area;
+      } else {
+        unresolved.add(plot);
+      }
+    }
+
+    if (unresolved.isNotEmpty) {
+      final baseArea = order.areaHa > 0
+          ? order.areaHa
+          : (order.affectedAreaHa > 0 ? order.affectedAreaHa : plots.length.toDouble());
+      final remaining = (baseArea - knownTotal).clamp(0, baseArea).toDouble();
+      final fallbackArea = remaining > 0
+          ? remaining / unresolved.length
+          : (baseArea / plots.length);
+      for (final plot in unresolved) {
+        result[plot] = fallbackArea;
+      }
+    }
+
+    return Map<String, double>.unmodifiable(result);
+  }
+
+  double _appliedEntryTankEquivalent(
+    TankApplicationEntry entry,
+    ApplicationOrder order,
+  ) {
+    if (entry.appliedTankEquivalent > 0) {
+      return entry.appliedTankEquivalent;
+    }
+    if (entry.appliedVolumeLt > 0 && order.tankCapacityLt > 0) {
+      return entry.appliedVolumeLt / order.tankCapacityLt;
+    }
+    if (entry.tankCapacityLt > 0 && order.tankCapacityLt > 0) {
+      return entry.tankCount * (entry.tankCapacityLt / order.tankCapacityLt);
+    }
+    return entry.tankCount;
+  }
+
+  double _selectedPlotsAreaHa(
+    Set<String> selectedPlots,
+    Map<String, double> plotAreaByName,
+  ) {
+    var total = 0.0;
+    for (final plot in selectedPlots) {
+      total += plotAreaByName[plot] ?? 0;
+    }
+    return total;
+  }
+
+  double _selectedPlotsPendingTankCount({
+    required ApplicationOrder order,
+    required List<String> allPlots,
+    required Set<String> selectedPlots,
+    required Map<String, double> plotAreaByName,
+  }) {
+    if (allPlots.isEmpty || selectedPlots.isEmpty) {
+      return 0;
+    }
+    final totalArea = _selectedPlotsAreaHa(allPlots.toSet(), plotAreaByName);
+    if (totalArea <= 0 || order.tankCount <= 0) {
+      return 0;
+    }
+    final selectedArea = _selectedPlotsAreaHa(selectedPlots, plotAreaByName);
+    if (selectedArea <= 0) {
+      return 0;
+    }
+    final selectedShare = (selectedArea / totalArea).clamp(0, 1).toDouble();
+    final selectedPlannedTanks = order.tankCount * selectedShare;
+
+    final selectedKeys = selectedPlots.map(_normalizePlotKey).toSet();
+    final orderPlotKeys = allPlots.map(_normalizePlotKey).toList(growable: false);
+    var selectedAppliedTanks = 0.0;
+    for (final entry in order.execution.tankApplications) {
+      final entryPlots = _splitUniquePlots(entry.plotName)
+          .map(_normalizePlotKey)
+          .where((value) => value.isNotEmpty)
+          .toSet();
+      final effectiveEntryPlots = entryPlots.isEmpty
+          ? orderPlotKeys.toSet()
+          : entryPlots;
+      if (effectiveEntryPlots.isEmpty) {
+        continue;
+      }
+      var selectedIntersection = 0;
+      for (final key in effectiveEntryPlots) {
+        if (selectedKeys.contains(key)) {
+          selectedIntersection += 1;
+        }
+      }
+      if (selectedIntersection <= 0) {
+        continue;
+      }
+      final equivalent = _appliedEntryTankEquivalent(entry, order);
+      selectedAppliedTanks +=
+          equivalent * (selectedIntersection / effectiveEntryPlots.length);
+    }
+
+    final pending = selectedPlannedTanks - selectedAppliedTanks;
+    if (pending <= 0) {
+      return 0;
+    }
+    return pending;
+  }
+
   double _plannedTankCount(ApplicationOrder? order) {
     if (order == null || order.tankCount <= 0) {
       return 0;
@@ -597,9 +786,20 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
       text: _formatTankCapacityInt(order.tankCapacityLt),
     );
     var appliedAt = DateTime.now();
-    final pending = _pendingTankCount(order);
-    if (pending > 0) {
-      tankCountController.text = pending.toStringAsFixed(2);
+    final availablePlots = _splitUniquePlots(order.plotName);
+    final plotAreaByName = await _resolveOrderPlotAreas(order);
+    if (!mounted) {
+      return null;
+    }
+    var selectedPlots = availablePlots.toSet();
+    var selectedPending = _selectedPlotsPendingTankCount(
+      order: order,
+      allPlots: availablePlots,
+      selectedPlots: selectedPlots,
+      plotAreaByName: plotAreaByName,
+    );
+    if (selectedPending > 0) {
+      tankCountController.text = selectedPending.toStringAsFixed(2);
     }
 
     final result = await showDialog<_TankApplicationInput>(
@@ -607,6 +807,16 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
       builder: (dialogContext) {
         return StatefulBuilder(
           builder: (context, setDialogState) {
+            final selectedAreaHa = _selectedPlotsAreaHa(
+              selectedPlots,
+              plotAreaByName,
+            );
+            selectedPending = _selectedPlotsPendingTankCount(
+              order: order,
+              allPlots: availablePlots,
+              selectedPlots: selectedPlots,
+              plotAreaByName: plotAreaByName,
+            );
             return AlertDialog(
               title: const Text('Registrar aplicacion por tanque'),
               content: Form(
@@ -615,7 +825,63 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text('Tanques pendientes: ${pending.toStringAsFixed(2)}'),
+                    FormField<Set<String>>(
+                      initialValue: selectedPlots,
+                      validator: (value) {
+                        if (value == null || value.isEmpty) {
+                          return 'Selecciona al menos un lote aplicado.';
+                        }
+                        return null;
+                      },
+                      builder: (fieldState) {
+                        return InputDecorator(
+                          decoration: InputDecoration(
+                            labelText: 'Lote(s) aplicado(s)',
+                            border: const OutlineInputBorder(),
+                            errorText: fieldState.errorText,
+                          ),
+                          child: Wrap(
+                            spacing: 8,
+                            runSpacing: 8,
+                            children: availablePlots.map((plot) {
+                              return FilterChip(
+                                label: Text(plot),
+                                selected: selectedPlots.contains(plot),
+                                onSelected: (checked) {
+                                  setDialogState(() {
+                                    if (checked) {
+                                      selectedPlots.add(plot);
+                                    } else {
+                                      selectedPlots.remove(plot);
+                                    }
+                                    fieldState.didChange(
+                                      selectedPlots.toSet(),
+                                    );
+                                    final suggested =
+                                        _selectedPlotsPendingTankCount(
+                                          order: order,
+                                          allPlots: availablePlots,
+                                          selectedPlots: selectedPlots,
+                                          plotAreaByName: plotAreaByName,
+                                        );
+                                    tankCountController.text = suggested > 0
+                                        ? suggested.toStringAsFixed(2)
+                                        : '';
+                                  });
+                                },
+                              );
+                            }).toList(growable: false),
+                          ),
+                        );
+                      },
+                    ),
+                    const SizedBox(height: 10),
+                    Text(
+                      'Superficie seleccionada: ${selectedAreaHa.toStringAsFixed(2)} ha',
+                    ),
+                    Text(
+                      'Tanques pendientes (lotes seleccionados): ${selectedPending.toStringAsFixed(2)}',
+                    ),
                     const SizedBox(height: 10),
                     TextFormField(
                       controller: tankCountController,
@@ -627,9 +893,22 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
                         border: OutlineInputBorder(),
                       ),
                       validator: (value) {
+                        if (selectedPlots.isEmpty) {
+                          return 'Selecciona al menos un lote aplicado.';
+                        }
                         final number = parseFlexibleDouble(value?.trim());
                         if (number <= 0) {
                           return 'Ingresa una cantidad mayor a cero.';
+                        }
+                        final capacity = _parseTankCapacityInt(
+                          tankCapacityController.text,
+                        );
+                        if (capacity > 0 && order.tankCapacityLt > 0) {
+                          final equivalent =
+                              number * (capacity / order.tankCapacityLt);
+                          if (equivalent > selectedPending + 0.000001) {
+                            return 'Excede los tanques pendientes (${selectedPending.toStringAsFixed(2)}).';
+                          }
                         }
                         return null;
                       },
@@ -647,9 +926,22 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
                         border: OutlineInputBorder(),
                       ),
                       validator: (value) {
+                        if (selectedPlots.isEmpty) {
+                          return 'Selecciona al menos un lote aplicado.';
+                        }
                         final number = _parseTankCapacityInt(value);
                         if (number <= 0) {
                           return 'Ingresa una capacidad valida.';
+                        }
+                        final tankCount = parseFlexibleDouble(
+                          tankCountController.text.trim(),
+                        );
+                        if (tankCount > 0 && order.tankCapacityLt > 0) {
+                          final equivalent =
+                              tankCount * (number / order.tankCapacityLt);
+                          if (equivalent > selectedPending + 0.000001) {
+                            return 'Excede los tanques pendientes (${selectedPending.toStringAsFixed(2)}).';
+                          }
                         }
                         return null;
                       },
@@ -688,6 +980,12 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
                     if (!formKey.currentState!.validate()) {
                       return;
                     }
+                    final orderedSelection = availablePlots
+                        .where((plot) => selectedPlots.contains(plot))
+                        .toList(growable: false);
+                    if (orderedSelection.isEmpty) {
+                      return;
+                    }
                     final tankCount = parseFlexibleDouble(
                       tankCountController.text.trim(),
                     );
@@ -699,6 +997,7 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
                         appliedAt: appliedAt,
                         tankCount: tankCount,
                         tankCapacityLt: tankCapacity,
+                        plotName: orderedSelection.join(', '),
                       ),
                     );
                   },
@@ -790,6 +1089,7 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
                               appliedAt: input.appliedAt,
                               appliedTankCount: input.tankCount,
                               tankCapacityLt: input.tankCapacityLt,
+                              plotName: input.plotName,
                             );
                             if (!mounted || !dialogContext.mounted) {
                               return;
@@ -797,7 +1097,7 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
                             Navigator.of(dialogContext).pop();
                             _showSnack(
                               'Aplicacion registrada: ${input.tankCount.toStringAsFixed(2)} tanque(s) '
-                              'de ${_formatTankCapacityInt(input.tankCapacityLt)} Lt.',
+                              'de ${_formatTankCapacityInt(input.tankCapacityLt)} Lt en lote(s) ${input.plotName}.',
                             );
                           } catch (error) {
                             if (!mounted) {
@@ -959,6 +1259,9 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
         return 'Servicio no disponible temporalmente. Intenta de nuevo.';
       }
       return error.message ?? 'Error de Firebase.';
+    }
+    if (error is StateError) {
+      return error.message;
     }
     final raw = error.toString();
     if (raw.contains('TimeoutException')) {
@@ -1400,11 +1703,13 @@ class _TankApplicationInput {
     required this.appliedAt,
     required this.tankCount,
     required this.tankCapacityLt,
+    required this.plotName,
   });
 
   final DateTime appliedAt;
   final double tankCount;
   final double tankCapacityLt;
+  final String plotName;
 }
 
 class _ThousandsIntInputFormatter extends TextInputFormatter {

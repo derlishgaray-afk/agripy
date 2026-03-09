@@ -323,6 +323,7 @@ class TankApplicationEntry {
     required this.appliedTankEquivalent,
     required this.appliedAt,
     required this.operatorUid,
+    required this.plotName,
   });
 
   final double tankCount;
@@ -331,6 +332,7 @@ class TankApplicationEntry {
   final double appliedTankEquivalent;
   final DateTime appliedAt;
   final String operatorUid;
+  final String plotName;
 
   Map<String, dynamic> toMap() {
     return {
@@ -340,6 +342,7 @@ class TankApplicationEntry {
       'appliedTankEquivalent': appliedTankEquivalent,
       'appliedAt': Timestamp.fromDate(appliedAt),
       'operatorUid': operatorUid,
+      'plotName': plotName,
     };
   }
 
@@ -351,6 +354,7 @@ class TankApplicationEntry {
       appliedTankEquivalent: parseFlexibleDouble(map['appliedTankEquivalent']),
       appliedAt: parseFlexibleDateTime(map['appliedAt']) ?? DateTime.now(),
       operatorUid: (map['operatorUid'] as String? ?? '').trim(),
+      plotName: (map['plotName'] as String? ?? '').trim(),
     );
   }
 }

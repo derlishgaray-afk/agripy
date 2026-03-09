@@ -1,6 +1,6 @@
-import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:excel/excel.dart';
 import 'package:intl/intl.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
@@ -46,47 +46,75 @@ class ReportProductItem {
 class ReportsExportService {
   final DateFormat _dateTimeFormat = DateFormat('dd/MM/yyyy HH:mm');
 
-  Uint8List buildCsv({
+  Uint8List buildExcel({
     required String tenantName,
     required DateTime generatedAt,
     required String filtersSummary,
     required List<ReportProductItem> items,
   }) {
-    final buffer = StringBuffer();
-    buffer.writeln('Empresa,${_escapeCsv(tenantName)}');
-    buffer.writeln(
-      'Generado,${_escapeCsv(_dateTimeFormat.format(generatedAt))}',
-    );
-    buffer.writeln('Filtros,${_escapeCsv(filtersSummary)}');
-    buffer.writeln();
-    buffer.writeln(
-      'Codigo,Fecha emision,Campo,Lote,Producto,Principio activo,Dosis,Unidad,Funcion,Cultivo,Estado fenologico,Objetivo,Responsable,Operador,Estado,Superficie afectada (ha)',
-    );
+    final excel = Excel.createExcel();
+    final sheetName = excel.getDefaultSheet() ?? 'Sheet1';
+    final sheet = excel[sheetName];
+
+    sheet.appendRow([
+      TextCellValue('Empresa'),
+      TextCellValue(tenantName),
+    ]);
+    sheet.appendRow([
+      TextCellValue('Generado'),
+      TextCellValue(_dateTimeFormat.format(generatedAt)),
+    ]);
+    sheet.appendRow([
+      TextCellValue('Filtros'),
+      TextCellValue(filtersSummary),
+    ]);
+    sheet.appendRow([TextCellValue('')]);
+
+    sheet.appendRow([
+      TextCellValue('Codigo'),
+      TextCellValue('Fecha emision'),
+      TextCellValue('Campo'),
+      TextCellValue('Lote'),
+      TextCellValue('Producto'),
+      TextCellValue('Principio activo'),
+      TextCellValue('Dosis'),
+      TextCellValue('Unidad'),
+      TextCellValue('Funcion'),
+      TextCellValue('Cultivo'),
+      TextCellValue('Estado fenologico'),
+      TextCellValue('Objetivo'),
+      TextCellValue('Responsable'),
+      TextCellValue('Operador'),
+      TextCellValue('Estado'),
+      TextCellValue('Superficie afectada (ha)'),
+    ]);
 
     for (final item in items) {
-      buffer.writeln(
-        [
-          _escapeCsv(item.orderCode),
-          _escapeCsv(_dateTimeFormat.format(item.issuedAt)),
-          _escapeCsv(item.fieldName),
-          _escapeCsv(item.plotName),
-          _escapeCsv(item.productName),
-          _escapeCsv(item.activeIngredient),
-          item.dose.toStringAsFixed(2),
-          _escapeCsv(item.unit),
-          _escapeCsv(item.functionName),
-          _escapeCsv(item.crop),
-          _escapeCsv(item.stage),
-          _escapeCsv(item.objective),
-          _escapeCsv(item.responsibleName),
-          _escapeCsv(item.operatorName),
-          _escapeCsv(item.emissionStatus),
-          item.affectedAreaHa.toStringAsFixed(2),
-        ].join(','),
-      );
+      sheet.appendRow([
+        TextCellValue(item.orderCode),
+        TextCellValue(_dateTimeFormat.format(item.issuedAt)),
+        TextCellValue(item.fieldName),
+        TextCellValue(item.plotName),
+        TextCellValue(item.productName),
+        TextCellValue(item.activeIngredient),
+        TextCellValue(item.dose.toStringAsFixed(2)),
+        TextCellValue(item.unit),
+        TextCellValue(item.functionName),
+        TextCellValue(item.crop),
+        TextCellValue(item.stage),
+        TextCellValue(item.objective),
+        TextCellValue(item.responsibleName),
+        TextCellValue(item.operatorName),
+        TextCellValue(item.emissionStatus),
+        TextCellValue(item.affectedAreaHa.toStringAsFixed(2)),
+      ]);
     }
 
-    return Uint8List.fromList(utf8.encode(buffer.toString()));
+    final encoded = excel.encode();
+    if (encoded == null) {
+      throw StateError('No se pudo generar el archivo Excel.');
+    }
+    return Uint8List.fromList(encoded);
   }
 
   Future<Uint8List> buildPdf({
@@ -237,11 +265,6 @@ class ReportsExportService {
       distinctOrders: orderAreas.length,
       totalAffectedArea: totalAffectedArea,
     );
-  }
-
-  String _escapeCsv(String input) {
-    final escaped = input.replaceAll('"', '""');
-    return '"$escaped"';
   }
 }
 

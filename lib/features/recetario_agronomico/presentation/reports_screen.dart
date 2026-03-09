@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
 import '../../../app/router.dart';
+import '../../../core/services/access_controller.dart';
 import '../../../shared/widgets/responsive_page.dart';
 import '../data/recetario_repo.dart';
 import '../domain/models.dart';
@@ -42,10 +43,57 @@ class _ReportsScreenState extends State<ReportsScreen> {
   String? _selectedOperator;
   String? _selectedResponsible;
   _ExecutionStatusFilter _executionStatusFilter = _ExecutionStatusFilter.all;
-  bool _exportingCsv = false;
+  bool _exportingExcel = false;
   bool _exportingPdf = false;
   bool _loadingEmittedRecipes = true;
   List<Recipe> _emittedRecipes = const [];
+
+  bool get _isSecondaryUser {
+    return widget.session.uid.trim() != widget.session.tenantId.trim() &&
+        widget.session.access.role == TenantRole.operator;
+  }
+
+  String _normalizeName(String value) {
+    return value.trim().toLowerCase().replaceAll(RegExp(r'\s+'), ' ');
+  }
+
+  bool _isOrderFromCurrentUserActivity(ApplicationOrder order) {
+    final uid = widget.session.uid.trim();
+    final currentName = _normalizeName(widget.session.access.displayName);
+    if (uid.isEmpty) {
+      return false;
+    }
+    if (order.assignedToUid.trim() == uid) {
+      return true;
+    }
+    if ((order.execution.operatorUid ?? '').trim() == uid) {
+      return true;
+    }
+    for (final entry in order.execution.tankApplications) {
+      if (entry.operatorUid.trim() == uid) {
+        return true;
+      }
+    }
+    if (currentName.isNotEmpty) {
+      final operatorName = _normalizeName(order.operatorName);
+      final engineerName = _normalizeName(order.engineerName);
+      if (operatorName == currentName || engineerName == currentName) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  List<ApplicationOrder> _ordersVisibleForCurrentUser(
+    List<ApplicationOrder> orders,
+  ) {
+    if (!_isSecondaryUser) {
+      return orders;
+    }
+    return orders
+        .where(_isOrderFromCurrentUserActivity)
+        .toList(growable: false);
+  }
 
   @override
   void initState() {
@@ -461,49 +509,49 @@ class _ReportsScreenState extends State<ReportsScreen> {
     });
   }
 
-  Future<void> _exportCsv({
+  Future<void> _exportExcel({
     required List<ReportProductItem> items,
     required String filtersSummary,
   }) async {
-    if (items.isEmpty || _exportingCsv || _exportingPdf) {
+    if (items.isEmpty || _exportingExcel || _exportingPdf) {
       return;
     }
     final now = DateTime.now();
     setState(() {
-      _exportingCsv = true;
+      _exportingExcel = true;
     });
     try {
-      final csv = _exportService.buildCsv(
+      final excel = _exportService.buildExcel(
         tenantName: widget.session.tenantName,
         generatedAt: now,
         filtersSummary: filtersSummary,
         items: items,
       );
-      final file = await _shareService.saveCsvTemp(
-        csv,
-        'informe_productos_recetados_${_fileStampFormat.format(now)}.csv',
+      final file = await _shareService.saveExcelTemp(
+        excel,
+        'informe_productos_recetados_${_fileStampFormat.format(now)}.xlsx',
       );
-      await _shareService.shareCsv(
+      await _shareService.shareExcel(
         file,
-        'Informe de productos recetados (${items.length} registros) en CSV.',
+        'Informe de productos recetados (${items.length} registros) en Excel.',
       );
       if (!mounted) {
         return;
       }
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('CSV generado y compartido.')),
+        const SnackBar(content: Text('Excel generado y compartido.')),
       );
     } catch (error) {
       if (!mounted) {
         return;
       }
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('No se pudo exportar CSV: $error')),
+        SnackBar(content: Text('No se pudo exportar Excel: $error')),
       );
     } finally {
       if (mounted) {
         setState(() {
-          _exportingCsv = false;
+          _exportingExcel = false;
         });
       }
     }
@@ -513,7 +561,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
     required List<ReportProductItem> items,
     required String filtersSummary,
   }) async {
-    if (items.isEmpty || _exportingCsv || _exportingPdf) {
+    if (items.isEmpty || _exportingExcel || _exportingPdf) {
       return;
     }
     final now = DateTime.now();
@@ -829,7 +877,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
             return const Center(child: CircularProgressIndicator());
           }
 
-          final allOrders = snapshot.data!;
+          final allOrders = _ordersVisibleForCurrentUser(snapshot.data!);
           final fields = _collectFieldNames(allOrders);
           final selectedField = fields.contains(_selectedField)
               ? _selectedField
@@ -879,7 +927,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
             selectedOperator: selectedOperator,
             selectedResponsible: selectedResponsible,
           );
-          final exporting = _exportingCsv || _exportingPdf;
+          final exporting = _exportingExcel || _exportingPdf;
           final recipeById = <String, Recipe>{};
           for (final recipe in _emittedRecipes) {
             final id = recipe.id;
@@ -1143,15 +1191,15 @@ class _ReportsScreenState extends State<ReportsScreen> {
                           OutlinedButton.icon(
                             onPressed: exportItems.isEmpty || exporting
                                 ? null
-                                : () => _exportCsv(
+                                : () => _exportExcel(
                                     items: exportItems,
                                     filtersSummary: filtersSummary,
                                   ),
                             icon: const Icon(Icons.table_view_outlined),
                             label: Text(
-                              _exportingCsv
-                                  ? 'Exportando CSV...'
-                                  : 'Exportar CSV',
+                              _exportingExcel
+                                  ? 'Exportando Excel...'
+                                  : 'Exportar Excel',
                             ),
                           ),
                           FilledButton.icon(

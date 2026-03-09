@@ -35,6 +35,15 @@ class RecetarioShareService {
     return _saveTemp(bytes: bytes, filename: filename, mimeType: 'text/csv');
   }
 
+  Future<XFile> saveExcelTemp(Uint8List bytes, String filename) async {
+    return _saveTemp(
+      bytes: bytes,
+      filename: filename,
+      mimeType:
+          'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+  }
+
   Future<XFile> _saveTemp({
     required Uint8List bytes,
     required String filename,
@@ -68,6 +77,10 @@ class RecetarioShareService {
   }
 
   Future<void> shareCsv(XFile file, String text) async {
+    await _share(file, text);
+  }
+
+  Future<void> shareExcel(XFile file, String text) async {
     await _share(file, text);
   }
 
