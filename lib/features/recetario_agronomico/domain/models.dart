@@ -42,6 +42,7 @@ double parseFlexibleDouble(dynamic value, {double fallback = 0}) {
 class DoseLine {
   const DoseLine({
     required this.productName,
+    this.formulation,
     this.activeIngredient,
     required this.dose,
     required this.unit,
@@ -49,6 +50,7 @@ class DoseLine {
   });
 
   final String productName;
+  final String? formulation;
   final String? activeIngredient;
   final double dose;
   final String unit;
@@ -57,6 +59,7 @@ class DoseLine {
   Map<String, dynamic> toMap() {
     return {
       'productName': productName,
+      'formulation': formulation,
       'activeIngredient': activeIngredient,
       'dose': dose,
       'unit': unit,
@@ -67,6 +70,10 @@ class DoseLine {
   factory DoseLine.fromMap(Map<String, dynamic> map) {
     return DoseLine(
       productName: (map['productName'] as String? ?? '').trim(),
+      formulation: _parseOptionalFormulation(
+        map['formulation'],
+        productName: (map['productName'] as String? ?? '').trim(),
+      ),
       activeIngredient:
           (map['activeIngredient'] as String?)?.trim().isEmpty ?? true
           ? null
@@ -76,6 +83,19 @@ class DoseLine {
       functionName: (map['function'] as String? ?? '').trim(),
     );
   }
+}
+
+String? _parseOptionalFormulation(dynamic raw, {required String productName}) {
+  final direct = (raw as String? ?? '').trim().toUpperCase();
+  if (direct.isNotEmpty) {
+    return direct;
+  }
+  final match = RegExp(r'\(([^()]+)\)\s*$').firstMatch(productName.trim());
+  final fromLabel = (match?.group(1) ?? '').trim().toUpperCase();
+  if (fromLabel.isEmpty) {
+    return null;
+  }
+  return fromLabel;
 }
 
 class Recipe {

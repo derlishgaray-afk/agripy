@@ -441,9 +441,10 @@ class _EmitOrderScreenState extends State<EmitOrderScreen> {
       if (!mounted) {
         return;
       }
+      final message = _friendlyEmitErrorMessage(error);
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(SnackBar(content: Text('No se pudo emitir: $error')));
+      ).showSnackBar(SnackBar(content: Text('No se pudo emitir: $message')));
     } finally {
       if (mounted) {
         setState(() {
@@ -451,6 +452,28 @@ class _EmitOrderScreenState extends State<EmitOrderScreen> {
         });
       }
     }
+  }
+
+  String _friendlyEmitErrorMessage(Object error) {
+    if (error is FirebaseException) {
+      if (error.code == 'permission-denied') {
+        return 'Permiso denegado en Firestore. Verifica reglas del tenant.';
+      }
+      if (error.code == 'unavailable') {
+        return 'Servicio no disponible. Revisa tu conexion e intenta de nuevo.';
+      }
+      final message = (error.message ?? '').trim();
+      if (message.isNotEmpty) {
+        return message;
+      }
+      return error.code.trim().isEmpty ? 'Error de Firestore.' : error.code;
+    }
+
+    final raw = error.toString().trim();
+    if (raw.contains('Dart exception thrown from converted Future')) {
+      return 'Error interno de Firestore al procesar la emision. Verifica permisos del contador secuencial.';
+    }
+    return raw.isEmpty ? 'Error inesperado.' : raw;
   }
 
   @override

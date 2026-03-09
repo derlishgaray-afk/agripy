@@ -4,6 +4,7 @@ import '../../../core/constants/modules.dart';
 import '../../../core/services/access_controller.dart';
 import '../../../core/services/tenant_path.dart';
 import '../domain/models.dart';
+import '../services/recetario_code_service.dart';
 
 class RecetarioRepo {
   RecetarioRepo({
@@ -11,13 +12,17 @@ class RecetarioRepo {
     required this.tenantId,
     required this.currentUid,
     required TenantUserAccess access,
+    RecetarioCodeService? recetarioCodeService,
   }) : _firestore = firestore,
-       _access = access;
+       _access = access,
+       _recetarioCodeService =
+           recetarioCodeService ?? RecetarioCodeService(firestore: firestore);
 
   final FirebaseFirestore _firestore;
   final String tenantId;
   final String currentUid;
   final TenantUserAccess _access;
+  final RecetarioCodeService _recetarioCodeService;
 
   void _assertModuleAccess() {
     if (!_access.isActive) {
@@ -137,7 +142,6 @@ class RecetarioRepo {
 
   Future<ApplicationOrder> createOrder({
     required Recipe recipe,
-    required String code,
     required String farmName,
     required String plotName,
     required double areaHa,
@@ -162,39 +166,52 @@ class RecetarioRepo {
     final ordersRef = TenantPath.applicationOrdersRef(_firestore, tenantId);
     final docRef = ordersRef.doc();
     final emittedRecipeRef = TenantPath.recipesRef(_firestore, tenantId).doc();
-    final order = ApplicationOrder(
-      id: docRef.id,
-      recipeId: emittedRecipeRef.id,
-      code: code,
-      farmName: farmName.trim(),
-      plotName: plotName.trim(),
-      areaHa: areaHa,
-      affectedAreaHa: affectedAreaHa,
-      tankCapacityLt: tankCapacityLt,
-      tankCount: tankCount,
-      issuedAt: now,
-      plannedDate: plannedDate,
-      engineerName: engineerName.trim(),
-      operatorName: operatorName.trim(),
-      assignedToUid: assignedToUid.trim(),
-      status: 'pending',
-      execution: const ExecutionData(done: false),
-    );
-    final emissionData = RecipeEmissionData.fromOrder(order);
-    final emittedRecipe = recipe.copyWith(
-      id: emittedRecipeRef.id,
-      status: 'emitted',
-      createdBy: currentUid,
-      createdAt: now,
-      emissionCount: 1,
-      lastEmission: emissionData,
-    );
+    ApplicationOrder? createdOrder;
 
-    final batch = _firestore.batch();
-    batch.set(docRef, order.toMap());
-    batch.set(emittedRecipeRef, emittedRecipe.toMap());
-    await batch.commit();
-    return order;
+    await _firestore.runTransaction((transaction) async {
+      final code = await _recetarioCodeService
+          .generateNextRecetarioCodeInTransaction(
+            tenantId: tenantId,
+            transaction: transaction,
+            issuedAt: now,
+          );
+      final order = ApplicationOrder(
+        id: docRef.id,
+        recipeId: emittedRecipeRef.id,
+        code: code,
+        farmName: farmName.trim(),
+        plotName: plotName.trim(),
+        areaHa: areaHa,
+        affectedAreaHa: affectedAreaHa,
+        tankCapacityLt: tankCapacityLt,
+        tankCount: tankCount,
+        issuedAt: now,
+        plannedDate: plannedDate,
+        engineerName: engineerName.trim(),
+        operatorName: operatorName.trim(),
+        assignedToUid: assignedToUid.trim(),
+        status: 'pending',
+        execution: const ExecutionData(done: false),
+      );
+      final emissionData = RecipeEmissionData.fromOrder(order);
+      final emittedRecipe = recipe.copyWith(
+        id: emittedRecipeRef.id,
+        status: 'emitted',
+        createdBy: currentUid,
+        createdAt: now,
+        emissionCount: 1,
+        lastEmission: emissionData,
+      );
+
+      transaction.set(docRef, order.toMap());
+      transaction.set(emittedRecipeRef, emittedRecipe.toMap());
+      createdOrder = order;
+    });
+
+    if (createdOrder == null) {
+      throw StateError('No se pudo emitir el recetario.');
+    }
+    return createdOrder!;
   }
 
   double _calculateTankCount({
@@ -258,6 +275,9 @@ class RecetarioRepo {
     required String plotName,
   }) async {
     _assertOrderExecutionAccess();
+    if (appliedAt.isAfter(DateTime.now())) {
+      throw StateError('La fecha y hora de aplicacion no puede ser futura.');
+    }
     if (orderId.trim().isEmpty) {
       throw StateError('Orden sin id.');
     }

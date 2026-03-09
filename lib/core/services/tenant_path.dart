@@ -31,6 +31,12 @@ class TenantPath {
   static String inputDoc(String tenantId, String inputId) =>
       '${inputsCollection(tenantId)}/$inputId';
 
+  static String countersCollection(String tenantId) =>
+      'tenants/$tenantId/counters';
+
+  static String counterDoc(String tenantId, String counterId) =>
+      '${countersCollection(tenantId)}/$counterId';
+
   static String operatorsCollection(String tenantId) =>
       'tenants/$tenantId/operators';
 
@@ -110,6 +116,21 @@ class TenantPath {
     String inputId,
   ) {
     return firestore.doc(inputDoc(tenantId, inputId));
+  }
+
+  static CollectionReference<Map<String, dynamic>> countersRef(
+    FirebaseFirestore firestore,
+    String tenantId,
+  ) {
+    return firestore.collection(countersCollection(tenantId));
+  }
+
+  static DocumentReference<Map<String, dynamic>> counterRef(
+    FirebaseFirestore firestore,
+    String tenantId,
+    String counterId,
+  ) {
+    return firestore.doc(counterDoc(tenantId, counterId));
   }
 
   static CollectionReference<Map<String, dynamic>> operatorsRef(

@@ -13,38 +13,47 @@ class RecetarioPngService {
     required RecipeEmissionData emission,
   }) async {
     const width = 1080;
-    const height = 1528;
+    final rowCount = recipe.doseLines.length;
+    final compact = rowCount > 9;
+    final extraRows = (rowCount - 6).clamp(0, 50);
+    final renderHeight = (1528 + (extraRows * 56)).clamp(1528, 5000).toInt();
     const pagePadding = 48.0;
 
     final recorder = ui.PictureRecorder();
     final canvas = Canvas(
       recorder,
-      Rect.fromLTWH(0, 0, width.toDouble(), height.toDouble()),
+      Rect.fromLTWH(0, 0, width.toDouble(), renderHeight.toDouble()),
     );
     final dateFormat = DateFormat('dd/MM/yyyy HH:mm');
 
     canvas.drawRect(
-      Rect.fromLTWH(0, 0, width.toDouble(), height.toDouble()),
+      Rect.fromLTWH(0, 0, width.toDouble(), renderHeight.toDouble()),
       Paint()..color = Colors.white,
     );
 
-    final titleStyle = const TextStyle(
-      fontSize: 50,
+    final titleStyle = TextStyle(
+      fontSize: compact ? 44 : 50,
       fontWeight: FontWeight.w700,
-      color: Color(0xFF1E6A2F),
+      color: const Color(0xFF1E6A2F),
     );
-    final sectionTitleStyle = const TextStyle(
-      fontSize: 36,
+    final sectionTitleStyle = TextStyle(
+      fontSize: compact ? 30 : 36,
       fontWeight: FontWeight.w700,
-      color: Color(0xFF1E6A2F),
+      color: const Color(0xFF1E6A2F),
     );
-    final bodyStyle = const TextStyle(fontSize: 28, color: Color(0xFF202020));
+    final bodyStyle = TextStyle(
+      fontSize: compact ? 24 : 28,
+      color: const Color(0xFF202020),
+    );
     final labelStyle = bodyStyle.copyWith(fontWeight: FontWeight.w600);
     final highlightedValueStyle = bodyStyle.copyWith(
       fontWeight: FontWeight.w700,
       color: const Color(0xFFC62828),
     );
-    final smallStyle = const TextStyle(fontSize: 22, color: Color(0xFF303030));
+    final smallStyle = TextStyle(
+      fontSize: compact ? 18 : 22,
+      color: const Color(0xFF303030),
+    );
     final smallHighlightedValueStyle = smallStyle.copyWith(
       fontWeight: FontWeight.w700,
       color: const Color(0xFFC62828),
@@ -109,11 +118,11 @@ class RecetarioPngService {
       borderWidth: 2.2,
       radius: 10,
     );
-    var hy = y + 18;
+    var hy = y + (compact ? 14 : 18);
     hy = _paintBlockText(
       canvas,
       text: 'AGRIpy - Recetario Agronómico',
-      x: pagePadding + 18,
+      x: pagePadding + (compact ? 14 : 18),
       y: hy,
       maxWidth: pageWidth - 36,
       style: titleStyle,
@@ -122,7 +131,7 @@ class RecetarioPngService {
     hy = _paintInlineFields(
       canvas,
       fields: headerLine1Fields,
-      x: pagePadding + 18,
+      x: pagePadding + (compact ? 14 : 18),
       y: hy,
       maxWidth: pageWidth - 36,
       labelStyle: bodyStyle,
@@ -132,7 +141,7 @@ class RecetarioPngService {
     hy = _paintInlineFields(
       canvas,
       fields: headerLine2Fields,
-      x: pagePadding + 18,
+      x: pagePadding + (compact ? 14 : 18),
       y: hy,
       maxWidth: pageWidth - 36,
       labelStyle: bodyStyle,
@@ -142,13 +151,13 @@ class RecetarioPngService {
     _paintInlineFields(
       canvas,
       fields: headerLine3Fields,
-      x: pagePadding + 18,
+      x: pagePadding + (compact ? 14 : 18),
       y: hy,
       maxWidth: pageWidth - 36,
       labelStyle: bodyStyle,
       highlightedValueStyle: highlightedValueStyle,
     );
-    y += headerHeight + 24;
+    y += headerHeight + (compact ? 14 : 24);
 
     final idLines = <List<_InlineField>>[
       [
@@ -228,14 +237,14 @@ class RecetarioPngService {
       borderWidth: 1.8,
       radius: 8,
     );
-    var iy = y + 14;
+    var iy = y + (compact ? 10 : 14);
     iy = _paintBlockText(
       canvas,
       text: 'Identificación',
       x: pagePadding + 16,
       y: iy,
       maxWidth: pageWidth - 32,
-      style: sectionTitleStyle.copyWith(fontSize: 34),
+      style: sectionTitleStyle.copyWith(fontSize: compact ? 28 : 34),
     );
     iy += 8;
     for (final line in idLines) {
@@ -250,19 +259,20 @@ class RecetarioPngService {
       );
       iy += 2;
     }
-    y += identityHeight + 22;
+    y += identityHeight + (compact ? 14 : 22);
 
     y = _paintBlockText(
       canvas,
-      text: 'Mezcla / Dosis',
+      text: 'Mezcla / Dosis / Orden de Carga (Seguir la secuencia)',
       x: pagePadding,
       y: y,
       maxWidth: pageWidth,
-      style: sectionTitleStyle.copyWith(fontSize: 34),
+      style: sectionTitleStyle.copyWith(fontSize: compact ? 28 : 34),
     );
     y += 10;
 
     final headers = [
+      'Nro',
       'Producto comercial',
       'Principio activo',
       'Unidad',
@@ -271,28 +281,31 @@ class RecetarioPngService {
     ];
     final tankCapacityLt = emission.tankCapacityLt;
     final waterVolumeLHa = recipe.waterVolumeLHa;
-    final columnFlex = [0.30, 0.32, 0.10, 0.12, 0.16];
+    final columnFlex = [0.06, 0.26, 0.30, 0.10, 0.12, 0.16];
     final rows = recipe.doseLines.isEmpty
         ? [
-            ['-', '-', '-', '-', '-'],
+            ['-', '-', '-', '-', '-', '-'],
           ]
         : recipe.doseLines
+              .asMap()
+              .entries
               .map(
-                (line) => [
-                  _safe(line.productName),
-                  _safe(line.activeIngredient),
-                  _safe(line.unit),
-                  line.dose.toStringAsFixed(2),
+                (entry) => [
+                  '${entry.key + 1}',
+                  _formatDoseLineProductName(entry.value),
+                  _safe(entry.value.activeIngredient),
+                  _safe(entry.value.unit),
+                  entry.value.dose.toStringAsFixed(2),
                   _calculatePerTankAmount(
-                    dosePerHa: line.dose,
+                    dosePerHa: entry.value.dose,
                     tankCapacityLt: tankCapacityLt,
                     waterVolumeLHa: waterVolumeLHa,
                   ).toStringAsFixed(2),
                 ],
               )
               .toList(growable: false);
-    const tableHeaderHeight = 46.0;
-    const tableRowHeight = 42.0;
+    final tableHeaderHeight = compact ? 38.0 : 46.0;
+    final tableRowHeight = compact ? 34.0 : 42.0;
     final tableHeight = tableHeaderHeight + (rows.length * tableRowHeight);
     final tableRect = Rect.fromLTWH(pagePadding, y, pageWidth, tableHeight);
 
@@ -325,12 +338,12 @@ class RecetarioPngService {
       _paintCellText(
         canvas,
         text: headers[i],
-        x: xCursor + 8,
-        y: y + 10,
-        maxWidth: cellWidth - 16,
+        x: xCursor + 6,
+        y: y + (compact ? 8 : 10),
+        maxWidth: cellWidth - 12,
         style: labelStyle.copyWith(
           color: const Color(0xFF1E6A2F),
-          fontSize: 24,
+          fontSize: compact ? 19 : 24,
         ),
       );
       xCursor += cellWidth;
@@ -362,22 +375,22 @@ class RecetarioPngService {
         _paintCellText(
           canvas,
           text: rows[row][col],
-          x: rowX + 8,
-          y: rowTop + 10,
-          maxWidth: cellWidth - 16,
+          x: rowX + 6,
+          y: rowTop + (compact ? 8 : 10),
+          maxWidth: cellWidth - 12,
           style: smallStyle,
         );
         rowX += cellWidth;
       }
     }
-    y += tableHeight + 18;
+    y += tableHeight + (compact ? 12 : 18);
 
     final waterText =
         'Volumen de agua: ${recipe.waterVolumeLHa.toStringAsFixed(2)} L/ha';
     final hasNozzleTypes = recipe.nozzleTypes.trim().isNotEmpty;
     final waterTitleHeight = _measureTextHeight(
       waterText,
-      labelStyle.copyWith(fontSize: 32),
+      labelStyle.copyWith(fontSize: compact ? 26 : 32),
       pageWidth - 28,
     );
     final nozzleHeight = hasNozzleTypes
@@ -395,7 +408,9 @@ class RecetarioPngService {
           )
         : 0.0;
     final waterHeight =
-        waterTitleHeight + (hasNozzleTypes ? nozzleHeight + 14 : 0) + 20;
+        waterTitleHeight +
+        (hasNozzleTypes ? nozzleHeight + (compact ? 10 : 14) : 0) +
+        (compact ? 14 : 20);
     final waterRect = Rect.fromLTWH(pagePadding, y, pageWidth, waterHeight);
     _drawBox(
       canvas,
@@ -406,10 +421,10 @@ class RecetarioPngService {
     final waterTitleBottom = _paintBlockText(
       canvas,
       text: waterText,
-      x: pagePadding + 14,
+      x: pagePadding + (compact ? 10 : 14),
       y: y + 10,
       maxWidth: pageWidth - 28,
-      style: labelStyle.copyWith(fontSize: 32),
+      style: labelStyle.copyWith(fontSize: compact ? 26 : 32),
     );
     if (hasNozzleTypes) {
       _paintInlineFields(
@@ -421,45 +436,14 @@ class RecetarioPngService {
             highlightValue: true,
           ),
         ],
-        x: pagePadding + 14,
+        x: pagePadding + (compact ? 10 : 14),
         y: waterTitleBottom + 4,
         maxWidth: pageWidth - 28,
         labelStyle: smallStyle,
         highlightedValueStyle: smallHighlightedValueStyle,
       );
     }
-    y += waterHeight + 18;
-
-    y = _paintBlockText(
-      canvas,
-      text: 'Checklist / Orden de carga',
-      x: pagePadding,
-      y: y,
-      maxWidth: pageWidth,
-      style: sectionTitleStyle.copyWith(fontSize: 34),
-    );
-    y += 8;
-    final mixOrderSteps = _resolveMixOrderSteps(recipe);
-    if (mixOrderSteps.isEmpty) {
-      y = _paintBlockText(
-        canvas,
-        text: 'Sin pasos definidos',
-        x: pagePadding + 8,
-        y: y,
-        maxWidth: pageWidth - 8,
-        style: bodyStyle,
-      );
-    } else {
-      y = _paintBlockText(
-        canvas,
-        text: mixOrderSteps.join(' -> '),
-        x: pagePadding + 8,
-        y: y,
-        maxWidth: pageWidth - 8,
-        style: bodyStyle,
-      );
-    }
-    y += 14;
+    y += waterHeight + (compact ? 12 : 18);
 
     final warningsText = _safe(recipe.warnings);
     final notesText = _safe(recipe.notes);
@@ -472,7 +456,7 @@ class RecetarioPngService {
         18 +
         _measureTextHeight(
           safetyTitle,
-          sectionTitleStyle.copyWith(fontSize: 34),
+          sectionTitleStyle.copyWith(fontSize: compact ? 28 : 34),
           pageWidth - 28,
         ) +
         8 +
@@ -492,40 +476,45 @@ class RecetarioPngService {
     sy = _paintBlockText(
       canvas,
       text: safetyTitle,
-      x: pagePadding + 14,
+      x: pagePadding + (compact ? 10 : 14),
       y: sy,
       maxWidth: pageWidth - 28,
-      style: sectionTitleStyle.copyWith(fontSize: 34),
+      style: sectionTitleStyle.copyWith(fontSize: compact ? 28 : 34),
     );
     sy += 4;
     sy = _paintBlockText(
       canvas,
       text: safetyBody1,
-      x: pagePadding + 14,
+      x: pagePadding + (compact ? 10 : 14),
       y: sy,
       maxWidth: pageWidth - 28,
       style: bodyStyle,
     );
     sy += 2;
-    _paintBlockText(
+    final safetyBottom = _paintBlockText(
       canvas,
       text: safetyBody2,
-      x: pagePadding + 14,
+      x: pagePadding + (compact ? 10 : 14),
       y: sy,
       maxWidth: pageWidth - 28,
       style: bodyStyle,
     );
 
-    _paintBlockText(
+    final footerTop = safetyBottom + (compact ? 14 : 18);
+    final footerBottom = _paintBlockText(
       canvas,
       text: 'Documento generado por AgriPy',
       x: pagePadding,
-      y: height - 40,
+      y: footerTop,
       maxWidth: pageWidth,
-      style: smallStyle.copyWith(fontSize: 18, color: const Color(0xFF696969)),
+      style: smallStyle.copyWith(
+        fontSize: compact ? 16 : 18,
+        color: const Color(0xFF696969),
+      ),
     );
 
-    final image = await recorder.endRecording().toImage(width, height);
+    final finalHeight = (footerBottom + 12).ceil().clamp(920, renderHeight);
+    final image = await recorder.endRecording().toImage(width, finalHeight);
     final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
     if (byteData == null) {
       throw StateError('No se pudo generar el PNG.');
@@ -543,7 +532,7 @@ class RecetarioPngService {
     final rows = recipe.doseLines
         .map(
           (line) => _RequiredProductRow(
-            productName: _safe(line.productName),
+            productName: _formatDoseLineProductName(line),
             unit: _safe(line.unit),
             totalRequired: _calculateTotalRequiredAmount(
               dosePerHa: line.dose,
@@ -833,18 +822,22 @@ class RecetarioPngService {
     return dosePerHa * affectedAreaHa;
   }
 
-  List<String> _resolveMixOrderSteps(Recipe recipe) {
-    final explicitSteps = recipe.mixOrder
-        .map((step) => _safe(step))
-        .where((step) => step.isNotEmpty)
-        .toList(growable: false);
-    if (explicitSteps.isNotEmpty) {
-      return explicitSteps;
+  String _formatDoseLineProductName(DoseLine line) {
+    final productName = _safe(line.productName);
+    if (productName.isEmpty) {
+      return '-';
     }
-    return recipe.doseLines
-        .map((line) => _safe(line.productName))
-        .where((step) => step.isNotEmpty)
-        .toList(growable: false);
+    final formulation = _safe(line.formulation).toUpperCase();
+    if (formulation.isEmpty) {
+      return productName;
+    }
+    final hasFormulationInLabel = RegExp(
+      r'\([^()]+\)\s*$',
+    ).hasMatch(productName);
+    if (hasFormulationInLabel) {
+      return productName;
+    }
+    return '$productName ($formulation)';
   }
 }
 

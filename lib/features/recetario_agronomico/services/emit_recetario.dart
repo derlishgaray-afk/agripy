@@ -1,7 +1,3 @@
-import 'dart:math';
-
-import 'package:intl/intl.dart';
-
 import '../data/recetario_repo.dart';
 import '../domain/models.dart';
 import 'recetario_pdf.dart';
@@ -123,10 +119,8 @@ class EmitRecetarioUsecase {
     required String operatorName,
     required String assignedToUid,
   }) async {
-    final code = _generateOrderCode();
     return _repo.createOrder(
       recipe: recipe,
-      code: code,
       farmName: farmName,
       plotName: plotName,
       areaHa: areaHa,
@@ -137,12 +131,5 @@ class EmitRecetarioUsecase {
       operatorName: operatorName,
       assignedToUid: assignedToUid,
     );
-  }
-
-  String _generateOrderCode() {
-    final now = DateTime.now();
-    final random = Random.secure().nextInt(999999).toString().padLeft(6, '0');
-    final year = DateFormat('yyyy').format(now);
-    return 'R-$year-$random';
   }
 }

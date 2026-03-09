@@ -20,7 +20,7 @@ class ReportsHubScreen extends StatelessWidget {
           children: [
             _ReportCard(
               icon: Icons.description_outlined,
-              title: 'Informe de Resetarios',
+              title: 'Informe de Recetarios',
               subtitle: 'Abrir el informe actual de emitidos.',
               onTap: () {
                 Navigator.of(context).push(

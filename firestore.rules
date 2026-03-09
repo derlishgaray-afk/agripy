@@ -330,6 +330,13 @@ service cloud.firestore {
           operatorCanUpdateOwnOrderExecution(tenantId);
       }
 
+      match /counters/{counterId} {
+        allow read: if isSuperAdmin() || requesterHasModule(tenantId, 'recetario_agronomico');
+        allow create, update: if isSuperAdmin() ||
+          (requesterHasModule(tenantId, 'recetario_agronomico') && requesterCanEditRecetario(tenantId));
+        allow delete: if isSuperAdmin();
+      }
+
       match /fields/{fieldId} {
         allow read: if isSuperAdmin() || requesterHasModule(tenantId, 'recetario_agronomico');
         allow create, update, delete: if isSuperAdmin() ||

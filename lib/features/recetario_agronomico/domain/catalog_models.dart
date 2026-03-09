@@ -1,5 +1,9 @@
 import 'models.dart';
 
+String _normalizeSupplyCommercialName(String value) {
+  return value.trim().replaceAll(RegExp(r'\s+'), ' ').toUpperCase();
+}
+
 class FieldLot {
   const FieldLot({
     required this.name,
@@ -87,6 +91,7 @@ class SupplyRegistryItem {
     this.activeIngredient,
     required this.unit,
     required this.type,
+    required this.formulation,
   });
 
   final String? id;
@@ -94,6 +99,7 @@ class SupplyRegistryItem {
   final String? activeIngredient;
   final String unit;
   final String type;
+  final String formulation;
 
   SupplyRegistryItem copyWith({
     String? id,
@@ -101,6 +107,7 @@ class SupplyRegistryItem {
     String? activeIngredient,
     String? unit,
     String? type,
+    String? formulation,
   }) {
     return SupplyRegistryItem(
       id: id ?? this.id,
@@ -108,15 +115,17 @@ class SupplyRegistryItem {
       activeIngredient: activeIngredient ?? this.activeIngredient,
       unit: unit ?? this.unit,
       type: type ?? this.type,
+      formulation: formulation ?? this.formulation,
     );
   }
 
   Map<String, dynamic> toMap() {
     return {
-      'commercialName': commercialName,
+      'commercialName': _normalizeSupplyCommercialName(commercialName),
       'activeIngredient': activeIngredient,
       'unit': unit,
       'type': type,
+      'formulation': formulation,
     };
   }
 
@@ -124,10 +133,13 @@ class SupplyRegistryItem {
     final active = (map['activeIngredient'] as String?)?.trim();
     return SupplyRegistryItem(
       id: id,
-      commercialName: (map['commercialName'] as String? ?? '').trim(),
+      commercialName: _normalizeSupplyCommercialName(
+        (map['commercialName'] as String? ?? ''),
+      ),
       activeIngredient: active == null || active.isEmpty ? null : active,
       unit: (map['unit'] as String? ?? '').trim(),
       type: (map['type'] as String? ?? '').trim(),
+      formulation: (map['formulation'] as String? ?? 'Otro').trim(),
     );
   }
 }

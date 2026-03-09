@@ -32,8 +32,6 @@ class RecetarioPdfService {
               pw.SizedBox(height: 10),
               _buildWaterVolume(recipe),
               pw.SizedBox(height: 10),
-              _buildMixOrder(recipe),
-              pw.SizedBox(height: 10),
               _buildSafety(recipe),
               pw.Spacer(),
               _buildFooter(qrData),
@@ -158,6 +156,7 @@ class RecetarioPdfService {
 
   pw.Widget _buildDoseTable(Recipe recipe, ApplicationOrder order) {
     final headers = [
+      'N°',
       'Producto comercial',
       'Principio activo',
       'Unidad',
@@ -167,33 +166,44 @@ class RecetarioPdfService {
     final tankCapacityLt = order.tankCapacityLt;
     final waterVolumeLHa = recipe.waterVolumeLHa;
     final data = recipe.doseLines
+        .asMap()
+        .entries
         .map(
-          (line) => [
-            line.productName,
-            line.activeIngredient ?? '-',
-            line.unit,
-            line.dose.toStringAsFixed(2),
+          (entry) => [
+            '${entry.key + 1}',
+            _formatDoseLineProductName(entry.value),
+            entry.value.activeIngredient ?? '-',
+            entry.value.unit,
+            entry.value.dose.toStringAsFixed(2),
             _calculatePerTankAmount(
-              dosePerHa: line.dose,
+              dosePerHa: entry.value.dose,
               tankCapacityLt: tankCapacityLt,
               waterVolumeLHa: waterVolumeLHa,
             ).toStringAsFixed(2),
           ],
         )
-        .toList();
+        .toList(growable: false);
 
     return pw.Column(
       crossAxisAlignment: pw.CrossAxisAlignment.start,
       children: [
-        _sectionTitle('Mezcla / Dosis'),
+        _sectionTitle('Mezcla / Dosis / Orden de Carga (Seguir la secuencia)'),
         pw.SizedBox(height: 6),
         pw.TableHelper.fromTextArray(
           headers: headers,
           data: data.isEmpty
               ? [
-                  ['-', '-', '-', '-', '-'],
+                  ['-', '-', '-', '-', '-', '-'],
                 ]
               : data,
+          columnWidths: <int, pw.TableColumnWidth>{
+            0: const pw.FlexColumnWidth(0.55),
+            1: const pw.FlexColumnWidth(2.5),
+            2: const pw.FlexColumnWidth(2.4),
+            3: const pw.FlexColumnWidth(0.95),
+            4: const pw.FlexColumnWidth(0.95),
+            5: const pw.FlexColumnWidth(1.05),
+          },
           border: pw.TableBorder.all(color: PdfColors.grey500, width: 0.6),
           headerStyle: pw.TextStyle(
             fontWeight: pw.FontWeight.bold,
@@ -247,34 +257,22 @@ class RecetarioPdfService {
     );
   }
 
-  pw.Widget _buildMixOrder(Recipe recipe) {
-    final steps = _resolveMixOrderSteps(recipe);
-    final linearOrder = steps.isEmpty
-        ? 'Sin pasos definidos.'
-        : steps.join(' -> ');
-
-    return pw.Column(
-      crossAxisAlignment: pw.CrossAxisAlignment.start,
-      children: [
-        _sectionTitle('Checklist / Orden de carga'),
-        pw.SizedBox(height: 4),
-        pw.Text(linearOrder.isEmpty ? 'Sin pasos definidos.' : linearOrder),
-      ],
-    );
-  }
-
-  List<String> _resolveMixOrderSteps(Recipe recipe) {
-    final explicitSteps = recipe.mixOrder
-        .map((step) => step.trim())
-        .where((step) => step.isNotEmpty)
-        .toList(growable: false);
-    if (explicitSteps.isNotEmpty) {
-      return explicitSteps;
+  String _formatDoseLineProductName(DoseLine line) {
+    final productName = line.productName.trim();
+    if (productName.isEmpty) {
+      return '-';
     }
-    return recipe.doseLines
-        .map((line) => line.productName.trim())
-        .where((step) => step.isNotEmpty)
-        .toList(growable: false);
+    final formulation = (line.formulation ?? '').trim().toUpperCase();
+    if (formulation.isEmpty) {
+      return productName;
+    }
+    final hasFormulationInLabel = RegExp(
+      r'\([^()]+\)\s*$',
+    ).hasMatch(productName);
+    if (hasFormulationInLabel) {
+      return productName;
+    }
+    return '$productName ($formulation)';
   }
 
   pw.Widget _inlineField(

@@ -10,6 +10,37 @@ import '../data/recetario_repo.dart';
 import '../domain/catalog_models.dart';
 import '../domain/models.dart';
 
+String _normalizeCommercialNameText(String value) {
+  return value.trim().replaceAll(RegExp(r'\s+'), ' ').toUpperCase();
+}
+
+String _stripFormulationSuffix(String value) {
+  return value.replaceAll(RegExp(r'\s*\([^()]*\)\s*$'), '').trim();
+}
+
+String _normalizeFormulationText(String? value) {
+  final normalized = (value ?? '').trim().toUpperCase();
+  return normalized;
+}
+
+String? _extractFormulationFromLabel(String value) {
+  final match = RegExp(r'\(([^()]+)\)\s*$').firstMatch(value.trim());
+  final formulation = _normalizeFormulationText(match?.group(1));
+  if (formulation.isEmpty) {
+    return null;
+  }
+  return formulation;
+}
+
+String _formatSupplyProductLabel(SupplyRegistryItem supply) {
+  final commercialName = _normalizeCommercialNameText(supply.commercialName);
+  final formulation = _normalizeFormulationText(supply.formulation);
+  if (formulation.isEmpty) {
+    return commercialName;
+  }
+  return '$commercialName ($formulation)';
+}
+
 class RecipeFormScreen extends StatefulWidget {
   const RecipeFormScreen({super.key, required this.session, this.recipe});
 
@@ -39,6 +70,7 @@ class _RecipeFormScreenState extends State<RecipeFormScreen> {
   List<SupplyRegistryItem> _supplies = const [];
 
   bool _saving = false;
+  bool _formulationOrderSuggested = false;
 
   @override
   void initState() {
@@ -115,25 +147,34 @@ class _RecipeFormScreenState extends State<RecipeFormScreen> {
         final selectedSupply = _findSupplyById(selectedId);
         if (selectedSupply == null) {
           line.selectedSupplyId = null;
+          line.formulation = _extractFormulationFromLabel(
+            line.productName.text,
+          );
           continue;
         }
-        line.productName.text = selectedSupply.commercialName;
+        line.productName.text = _formatSupplyProductLabel(selectedSupply);
         line.activeIngredient.text = selectedSupply.activeIngredient ?? '';
         line.unit.text = _normalizeUnit(selectedSupply.unit);
+        line.formulation = _normalizeFormulationText(
+          selectedSupply.formulation,
+        );
         continue;
       }
       final product = line.productName.text.trim();
       if (product.isEmpty) {
+        line.formulation = null;
         continue;
       }
       final matched = _findSupplyByCommercialName(product);
       if (matched == null) {
+        line.formulation = _extractFormulationFromLabel(product);
         continue;
       }
       line.selectedSupplyId = matched.id;
-      line.productName.text = matched.commercialName;
+      line.productName.text = _formatSupplyProductLabel(matched);
       line.activeIngredient.text = matched.activeIngredient ?? '';
       line.unit.text = _normalizeUnit(matched.unit);
+      line.formulation = _normalizeFormulationText(matched.formulation);
     }
   }
 
@@ -147,7 +188,9 @@ class _RecipeFormScreenState extends State<RecipeFormScreen> {
   }
 
   SupplyRegistryItem? _findSupplyByCommercialName(String commercialName) {
-    final normalized = commercialName.trim().toLowerCase();
+    final normalized = _stripFormulationSuffix(
+      commercialName,
+    ).trim().toLowerCase();
     for (final item in _supplies) {
       if (item.commercialName.trim().toLowerCase() == normalized) {
         return item;
@@ -258,6 +301,125 @@ class _RecipeFormScreenState extends State<RecipeFormScreen> {
         .map((line) => line.productName.trim())
         .where((step) => step.isNotEmpty)
         .toList(growable: false);
+  }
+
+  int _getFormulationPriority(String? formulation) {
+    final normalized = (formulation ?? '').trim().toLowerCase();
+    switch (normalized) {
+      case 'wp':
+        return 1;
+      case 'wg':
+        return 2;
+      case 'sc':
+        return 3;
+      case 'ec':
+        return 4;
+      case 'sl':
+        return 5;
+      case 'coadyuvante':
+        return 6;
+      case 'aceite':
+        return 7;
+      case 'otro':
+        return 8;
+      default:
+        return 999;
+    }
+  }
+
+  SupplyRegistryItem? _resolveSupplyForDoseLine(_DoseLineInput line) {
+    final selectedId = line.selectedSupplyId;
+    if (selectedId != null && selectedId.trim().isNotEmpty) {
+      final byId = _findSupplyById(selectedId);
+      if (byId != null) {
+        return byId;
+      }
+    }
+    final productName = line.productName.text.trim();
+    if (productName.isEmpty) {
+      return null;
+    }
+    return _findSupplyByCommercialName(productName);
+  }
+
+  List<String> _buildFormulationWarnings() {
+    var hasSolid = false;
+    var hasOil = false;
+    var hasAdjuvant = false;
+
+    for (final line in _doseLineInputs) {
+      final supply = _resolveSupplyForDoseLine(line);
+      final formulation = (supply?.formulation ?? '').trim().toLowerCase();
+      if (formulation == 'wp' || formulation == 'wg') {
+        hasSolid = true;
+      }
+      if (formulation == 'aceite') {
+        hasOil = true;
+      }
+      if (formulation == 'coadyuvante') {
+        hasAdjuvant = true;
+      }
+    }
+
+    final warnings = <String>[];
+    if (hasSolid) {
+      warnings.add(
+        'Se recomienda premezclar formulaciones solidas antes de cargar al tanque.',
+      );
+    }
+    if (hasOil) {
+      warnings.add('Agregar aceites al final de la carga.');
+    }
+    if (hasAdjuvant) {
+      warnings.add(
+        'Verificar indicacion tecnica del coadyuvante; normalmente se agrega al final.',
+      );
+    }
+    return warnings;
+  }
+
+  void _sortDoseLinesByFormulation() {
+    if (_doseLineInputs.isEmpty) {
+      return;
+    }
+
+    final sortable = <_DoseLineSortItem>[];
+    for (var i = 0; i < _doseLineInputs.length; i++) {
+      final line = _doseLineInputs[i];
+      final hasProduct = line.productName.text.trim().isNotEmpty;
+      final supply = _resolveSupplyForDoseLine(line);
+      final priority = hasProduct
+          ? _getFormulationPriority(supply?.formulation)
+          : 999;
+      sortable.add(
+        _DoseLineSortItem(
+          line: line,
+          originalIndex: i,
+          hasProduct: hasProduct,
+          priority: priority,
+        ),
+      );
+    }
+
+    sortable.sort((a, b) {
+      if (a.hasProduct != b.hasProduct) {
+        return a.hasProduct ? -1 : 1;
+      }
+      final byPriority = a.priority.compareTo(b.priority);
+      if (byPriority != 0) {
+        return byPriority;
+      }
+      return a.originalIndex.compareTo(b.originalIndex);
+    });
+
+    setState(() {
+      _doseLineInputs
+        ..clear()
+        ..addAll(sortable.map((entry) => entry.line));
+      _formulationOrderSuggested = true;
+    });
+
+    _showSnack('Orden sugerido aplicado. Puede ajustarlo manualmente.');
   }
 
   void _moveDoseLine({required int from, required int to}) {
@@ -452,29 +614,120 @@ class _RecipeFormScreenState extends State<RecipeFormScreen> {
   }
 
   Widget _buildDoseLinesEditor() {
+    final formulationWarnings = _buildFormulationWarnings();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Row(
-          children: [
-            Text(
-              'Mezcla / dosis',
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
-            const Spacer(),
-            TextButton.icon(
-              onPressed: () =>
-                  setState(() => _doseLineInputs.add(_DoseLineInput.empty())),
-              icon: const Icon(Icons.add),
-              label: const Text('Agregar fila'),
-            ),
-          ],
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final compact = constraints.maxWidth < 560;
+            if (compact) {
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Mezcla / dosis',
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                  const SizedBox(height: 6),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      OutlinedButton.icon(
+                        onPressed: _sortDoseLinesByFormulation,
+                        icon: const Icon(Icons.auto_fix_high_outlined),
+                        label: const Text('Ordenar por formulación'),
+                      ),
+                      TextButton.icon(
+                        onPressed: () => setState(
+                          () => _doseLineInputs.add(_DoseLineInput.empty()),
+                        ),
+                        icon: const Icon(Icons.add),
+                        label: const Text('Agregar fila'),
+                      ),
+                    ],
+                  ),
+                ],
+              );
+            }
+            return Row(
+              children: [
+                Text(
+                  'Mezcla / dosis',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+                const Spacer(),
+                OutlinedButton.icon(
+                  onPressed: _sortDoseLinesByFormulation,
+                  icon: const Icon(Icons.auto_fix_high_outlined),
+                  label: const Text('Ordenar por formulación'),
+                ),
+                const SizedBox(width: 6),
+                TextButton.icon(
+                  onPressed: () => setState(
+                    () => _doseLineInputs.add(_DoseLineInput.empty()),
+                  ),
+                  icon: const Icon(Icons.add),
+                  label: const Text('Agregar fila'),
+                ),
+              ],
+            );
+          },
         ),
         const SizedBox(height: 6),
         Text(
           'El orden de los productos define el checklist / orden de carga.',
           style: Theme.of(context).textTheme.bodySmall,
         ),
+        const SizedBox(height: 2),
+        Text(
+          'Puede ordenar automáticamente por formulación y luego ajustar manualmente.',
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
+        if (_formulationOrderSuggested) ...[
+          const SizedBox(height: 8),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              border: Border.all(color: Theme.of(context).dividerColor),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: const Text(
+              'Orden sugerido aplicado. Puede ajustarlo manualmente.',
+            ),
+          ),
+        ],
+        if (_formulationOrderSuggested && formulationWarnings.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              border: Border.all(color: Theme.of(context).dividerColor),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Advertencias de formulación',
+                  style: Theme.of(
+                    context,
+                  ).textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w700),
+                ),
+                const SizedBox(height: 4),
+                ...formulationWarnings.map(
+                  (warning) => Padding(
+                    padding: const EdgeInsets.only(bottom: 2),
+                    child: Text('• $warning'),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
         const SizedBox(height: 6),
         for (var index = 0; index < _doseLineInputs.length; index++) ...[
           _DoseLineEditorRow(
@@ -557,6 +810,7 @@ class _DoseLineEditorRow extends StatelessWidget {
                 tooltip: 'Quitar producto',
                 onPressed: () {
                   input.selectedSupplyId = null;
+                  input.formulation = null;
                   input.productName.clear();
                   input.activeIngredient.clear();
                   input.dose.clear();
@@ -579,6 +833,7 @@ class _DoseLineEditorRow extends StatelessWidget {
                         }
                         if (picked.cleared) {
                           input.selectedSupplyId = null;
+                          input.formulation = null;
                           input.productName.clear();
                           input.activeIngredient.clear();
                           input.dose.clear();
@@ -590,7 +845,12 @@ class _DoseLineEditorRow extends StatelessWidget {
                           return;
                         }
                         input.selectedSupplyId = selected.id;
-                        input.productName.text = selected.commercialName;
+                        input.formulation = _normalizeFormulationText(
+                          selected.formulation,
+                        );
+                        input.productName.text = _formatSupplyProductLabel(
+                          selected,
+                        );
                         input.activeIngredient.text =
                             selected.activeIngredient ?? '';
                         input.unit.text = _resolveSelectedUnit(selected.unit);
@@ -613,6 +873,7 @@ class _DoseLineEditorRow extends StatelessWidget {
                 }
                 if (picked.cleared) {
                   input.selectedSupplyId = null;
+                  input.formulation = null;
                   input.productName.clear();
                   input.activeIngredient.clear();
                   input.dose.clear();
@@ -624,7 +885,10 @@ class _DoseLineEditorRow extends StatelessWidget {
                   return;
                 }
                 input.selectedSupplyId = selected.id;
-                input.productName.text = selected.commercialName;
+                input.formulation = _normalizeFormulationText(
+                  selected.formulation,
+                );
+                input.productName.text = _formatSupplyProductLabel(selected);
                 input.activeIngredient.text = selected.activeIngredient ?? '';
                 input.unit.text = _resolveSelectedUnit(selected.unit);
               },
@@ -819,7 +1083,7 @@ class _DoseLineEditorRow extends StatelessWidget {
                               final subtitle = (item.activeIngredient ?? '')
                                   .trim();
                               return ListTile(
-                                title: Text(item.commercialName),
+                                title: Text(_formatSupplyProductLabel(item)),
                                 subtitle: subtitle.isEmpty
                                     ? Text('Unidad: ${item.unit}')
                                     : Text('$subtitle | Unidad: ${item.unit}'),
@@ -862,12 +1126,27 @@ class _ProductPickerResult {
   final bool cleared;
 }
 
+class _DoseLineSortItem {
+  const _DoseLineSortItem({
+    required this.line,
+    required this.originalIndex,
+    required this.hasProduct,
+    required this.priority,
+  });
+
+  final _DoseLineInput line;
+  final int originalIndex;
+  final bool hasProduct;
+  final int priority;
+}
+
 class _DoseLineInput {
   _DoseLineInput({
     required this.productName,
     required this.activeIngredient,
     required this.dose,
     required this.unit,
+    this.formulation,
     this.selectedSupplyId,
   });
 
@@ -875,6 +1154,7 @@ class _DoseLineInput {
   final TextEditingController activeIngredient;
   final TextEditingController dose;
   final TextEditingController unit;
+  String? formulation;
   String? selectedSupplyId;
 
   factory _DoseLineInput.empty() {
@@ -883,6 +1163,7 @@ class _DoseLineInput {
       activeIngredient: TextEditingController(),
       dose: TextEditingController(),
       unit: TextEditingController(text: 'Lt.'),
+      formulation: null,
       selectedSupplyId: null,
     );
   }
@@ -900,6 +1181,9 @@ class _DoseLineInput {
             ? normalizedUnit
             : 'Lt.',
       ),
+      formulation: _normalizeFormulationText(
+        line.formulation ?? _extractFormulationFromLabel(line.productName),
+      ),
       selectedSupplyId: null,
     );
   }
@@ -910,8 +1194,12 @@ class _DoseLineInput {
       return null;
     }
     final active = activeIngredient.text.trim();
+    final resolvedFormulation = _normalizeFormulationText(
+      formulation ?? _extractFormulationFromLabel(product),
+    );
     return DoseLine(
       productName: product,
+      formulation: resolvedFormulation.isEmpty ? null : resolvedFormulation,
       activeIngredient: active.isEmpty ? null : active,
       dose: parseFlexibleDouble(dose.text.trim()),
       unit: unit.text.trim().isEmpty ? 'Lt.' : unit.text.trim(),

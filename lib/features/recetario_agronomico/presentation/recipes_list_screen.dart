@@ -751,11 +751,11 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
 
   Future<DateTime?> _pickDateTime({DateTime? initialDateTime}) async {
     final now = DateTime.now();
-    final initial = initialDateTime ?? now;
+    final initial = (initialDateTime ?? now).isAfter(now) ? now : initialDateTime ?? now;
     final pickedDate = await showDatePicker(
       context: context,
       firstDate: DateTime(now.year - 5),
-      lastDate: DateTime(now.year + 3),
+      lastDate: DateTime(now.year, now.month, now.day),
       initialDate: initial,
     );
     if (pickedDate == null || !mounted) {
@@ -768,13 +768,18 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
     if (pickedTime == null) {
       return null;
     }
-    return DateTime(
+    final pickedDateTime = DateTime(
       pickedDate.year,
       pickedDate.month,
       pickedDate.day,
       pickedTime.hour,
       pickedTime.minute,
     );
+    if (pickedDateTime.isAfter(now)) {
+      _showSnack('No se permite fecha y hora futura.');
+      return null;
+    }
+    return pickedDateTime;
   }
 
   Future<_TankApplicationInput?> _collectTankApplicationInput({
@@ -978,6 +983,10 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
                 FilledButton(
                   onPressed: () {
                     if (!formKey.currentState!.validate()) {
+                      return;
+                    }
+                    if (appliedAt.isAfter(DateTime.now())) {
+                      _showSnack('No se permite fecha y hora futura.');
                       return;
                     }
                     final orderedSelection = availablePlots

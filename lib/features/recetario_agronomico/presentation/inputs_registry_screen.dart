@@ -17,8 +17,50 @@ class InputsRegistryScreen extends StatefulWidget {
 
 class _InputsRegistryScreenState extends State<InputsRegistryScreen> {
   late final RecetarioCatalogRepo _repo;
+  static const List<String> _supplyTypeOptions = <String>[
+    'herbicida',
+    'fungicida',
+    'insecticida',
+    'coadyuvante',
+    'fertilizante',
+    'Otros',
+  ];
+  static const List<String> _formulationOptions = <String>[
+    'WP',
+    'WG',
+    'SC',
+    'EC',
+    'SL',
+    'Coadyuvante',
+    'Aceite',
+    'Otro',
+  ];
 
   bool get _canEdit => widget.session.access.canEditRecetario;
+
+  String _normalizeSupplyType(String? value) {
+    final raw = (value ?? '').trim().toLowerCase();
+    for (final option in _supplyTypeOptions) {
+      if (option.toLowerCase() == raw) {
+        return option;
+      }
+    }
+    return 'Otros';
+  }
+
+  String _normalizeCommercialName(String value) {
+    return value.trim().replaceAll(RegExp(r'\s+'), ' ').toUpperCase();
+  }
+
+  String _normalizeFormulation(String? value) {
+    final raw = (value ?? '').trim().toLowerCase();
+    for (final option in _formulationOptions) {
+      if (option.toLowerCase() == raw) {
+        return option;
+      }
+    }
+    return 'Otro';
+  }
 
   @override
   void initState() {
@@ -38,8 +80,9 @@ class _InputsRegistryScreenState extends State<InputsRegistryScreen> {
     final activeController = TextEditingController(
       text: existing?.activeIngredient ?? '',
     );
-    final typeController = TextEditingController(text: existing?.type ?? '');
     var unit = existing?.unit == 'Kg.' ? 'Kg.' : 'Lt.';
+    var type = _normalizeSupplyType(existing?.type);
+    var formulation = _normalizeFormulation(existing?.formulation);
     final isEditing = existing != null;
 
     await showDialog<void>(
@@ -49,50 +92,86 @@ class _InputsRegistryScreenState extends State<InputsRegistryScreen> {
           builder: (context, setModalState) {
             return AlertDialog(
               title: Text(isEditing ? 'Editar insumo' : 'Nuevo insumo'),
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  TextField(
-                    controller: nameController,
-                    decoration: const InputDecoration(
-                      labelText: 'Nombre comercial',
-                      border: OutlineInputBorder(),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    TextField(
+                      controller: nameController,
+                      decoration: const InputDecoration(
+                        labelText: 'Nombre comercial',
+                        border: OutlineInputBorder(),
+                      ),
                     ),
-                  ),
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: activeController,
-                    decoration: const InputDecoration(
-                      labelText: 'Principio activo (opcional)',
-                      border: OutlineInputBorder(),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: activeController,
+                      decoration: const InputDecoration(
+                        labelText: 'Principio activo (opcional)',
+                        border: OutlineInputBorder(),
+                      ),
                     ),
-                  ),
-                  const SizedBox(height: 12),
-                  DropdownButtonFormField<String>(
-                    initialValue: unit,
-                    decoration: const InputDecoration(
-                      labelText: 'Unidad',
-                      border: OutlineInputBorder(),
+                    const SizedBox(height: 12),
+                    DropdownButtonFormField<String>(
+                      initialValue: unit,
+                      decoration: const InputDecoration(
+                        labelText: 'Unidad',
+                        border: OutlineInputBorder(),
+                      ),
+                      items: const [
+                        DropdownMenuItem(value: 'Kg.', child: Text('Kg.')),
+                        DropdownMenuItem(value: 'Lt.', child: Text('Lt.')),
+                      ],
+                      onChanged: (value) {
+                        setModalState(() {
+                          unit = value ?? 'Lt.';
+                        });
+                      },
                     ),
-                    items: const [
-                      DropdownMenuItem(value: 'Kg.', child: Text('Kg.')),
-                      DropdownMenuItem(value: 'Lt.', child: Text('Lt.')),
-                    ],
-                    onChanged: (value) {
-                      setModalState(() {
-                        unit = value ?? 'Lt.';
-                      });
-                    },
-                  ),
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: typeController,
-                    decoration: const InputDecoration(
-                      labelText: 'Tipo',
-                      border: OutlineInputBorder(),
+                    const SizedBox(height: 12),
+                    DropdownButtonFormField<String>(
+                      initialValue: type,
+                      decoration: const InputDecoration(
+                        labelText: 'Tipo',
+                        border: OutlineInputBorder(),
+                      ),
+                      items: _supplyTypeOptions
+                          .map(
+                            (option) => DropdownMenuItem<String>(
+                              value: option,
+                              child: Text(option),
+                            ),
+                          )
+                          .toList(growable: false),
+                      onChanged: (value) {
+                        setModalState(() {
+                          type = value ?? 'Otros';
+                        });
+                      },
                     ),
-                  ),
-                ],
+                    const SizedBox(height: 12),
+                    DropdownButtonFormField<String>(
+                      initialValue: formulation,
+                      decoration: const InputDecoration(
+                        labelText: 'Formulación',
+                        border: OutlineInputBorder(),
+                      ),
+                      items: _formulationOptions
+                          .map(
+                            (option) => DropdownMenuItem<String>(
+                              value: option,
+                              child: Text(option),
+                            ),
+                          )
+                          .toList(growable: false),
+                      onChanged: (value) {
+                        setModalState(() {
+                          formulation = value ?? 'Otro';
+                        });
+                      },
+                    ),
+                  ],
+                ),
               ),
               actions: [
                 TextButton(
@@ -101,14 +180,9 @@ class _InputsRegistryScreenState extends State<InputsRegistryScreen> {
                 ),
                 FilledButton(
                   onPressed: () async {
-                    final name = nameController.text.trim();
-                    final type = typeController.text.trim();
+                    final name = _normalizeCommercialName(nameController.text);
                     if (name.isEmpty) {
                       _showSnack('El nombre comercial es obligatorio.');
-                      return;
-                    }
-                    if (type.isEmpty) {
-                      _showSnack('El tipo es obligatorio.');
                       return;
                     }
                     final item = SupplyRegistryItem(
@@ -118,7 +192,8 @@ class _InputsRegistryScreenState extends State<InputsRegistryScreen> {
                           ? null
                           : activeController.text.trim(),
                       unit: unit,
-                      type: type,
+                      type: _normalizeSupplyType(type),
+                      formulation: _normalizeFormulation(formulation),
                     );
                     try {
                       if (isEditing) {
@@ -145,7 +220,6 @@ class _InputsRegistryScreenState extends State<InputsRegistryScreen> {
 
     nameController.dispose();
     activeController.dispose();
-    typeController.dispose();
   }
 
   Future<void> _deleteSupply(SupplyRegistryItem item) async {
@@ -224,7 +298,7 @@ class _InputsRegistryScreenState extends State<InputsRegistryScreen> {
                   child: ListTile(
                     title: Text(item.commercialName),
                     subtitle: Text(
-                      'Principio activo: ${item.activeIngredient ?? "-"}\nUnidad: ${item.unit}    Tipo: ${item.type}',
+                      'Principio activo: ${item.activeIngredient ?? "-"}\nUnidad: ${item.unit}    Tipo: ${item.type}    Formulación: ${_normalizeFormulation(item.formulation)}',
                     ),
                     isThreeLine: true,
                     trailing: _canEdit
