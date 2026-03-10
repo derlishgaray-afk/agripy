@@ -9,6 +9,8 @@ import '../data/catalog_repo.dart';
 import '../data/recetario_repo.dart';
 import '../domain/catalog_models.dart';
 import '../domain/models.dart';
+import '../services/funcion_priority.dart';
+import '../services/mix_validation_service.dart';
 
 String _normalizeCommercialNameText(String value) {
   return value.trim().replaceAll(RegExp(r'\s+'), ' ').toUpperCase();
@@ -51,10 +53,14 @@ class RecipeFormScreen extends StatefulWidget {
   State<RecipeFormScreen> createState() => _RecipeFormScreenState();
 }
 
+enum _UnsavedExitDecision { save, discard }
+
 class _RecipeFormScreenState extends State<RecipeFormScreen> {
   final _formKey = GlobalKey<FormState>();
   late final RecetarioRepo _repo;
   late final RecetarioCatalogRepo _catalogRepo;
+  final MixValidationService _mixValidationService =
+      const MixValidationService();
 
   final _titleController = TextEditingController();
   final _objectiveController = TextEditingController();
@@ -71,6 +77,8 @@ class _RecipeFormScreenState extends State<RecipeFormScreen> {
 
   bool _saving = false;
   bool _formulationOrderSuggested = false;
+  String _initialFormSnapshot = '';
+  bool _initialSnapshotSettled = false;
 
   @override
   void initState() {
@@ -94,6 +102,12 @@ class _RecipeFormScreenState extends State<RecipeFormScreen> {
       setState(() {
         _supplies = items;
         _syncDoseLinesWithSupplies();
+        if (!_initialSnapshotSettled) {
+          if (!_hasUnsavedChanges()) {
+            _initialFormSnapshot = _buildFormSnapshot();
+          }
+          _initialSnapshotSettled = true;
+        }
       });
     });
     _populateForm(widget.recipe);
@@ -102,6 +116,7 @@ class _RecipeFormScreenState extends State<RecipeFormScreen> {
   void _populateForm(Recipe? recipe) {
     if (recipe == null) {
       _doseLineInputs.add(_DoseLineInput.empty());
+      _initialFormSnapshot = _buildFormSnapshot();
       return;
     }
 
@@ -121,6 +136,7 @@ class _RecipeFormScreenState extends State<RecipeFormScreen> {
         _doseLineInputs.add(_DoseLineInput.fromLine(line));
       }
     }
+    _initialFormSnapshot = _buildFormSnapshot();
   }
 
   @override
@@ -150,6 +166,7 @@ class _RecipeFormScreenState extends State<RecipeFormScreen> {
           line.formulation = _extractFormulationFromLabel(
             line.productName.text,
           );
+          line.functionName = '';
           continue;
         }
         line.productName.text = _formatSupplyProductLabel(selectedSupply);
@@ -158,16 +175,19 @@ class _RecipeFormScreenState extends State<RecipeFormScreen> {
         line.formulation = _normalizeFormulationText(
           selectedSupply.formulation,
         );
+        line.functionName = normalizeFuncionKey(selectedSupply.funcion);
         continue;
       }
       final product = line.productName.text.trim();
       if (product.isEmpty) {
         line.formulation = null;
+        line.functionName = '';
         continue;
       }
       final matched = _findSupplyByCommercialName(product);
       if (matched == null) {
         line.formulation = _extractFormulationFromLabel(product);
+        line.functionName = '';
         continue;
       }
       line.selectedSupplyId = matched.id;
@@ -175,6 +195,7 @@ class _RecipeFormScreenState extends State<RecipeFormScreen> {
       line.activeIngredient.text = matched.activeIngredient ?? '';
       line.unit.text = _normalizeUnit(matched.unit);
       line.formulation = _normalizeFormulationText(matched.formulation);
+      line.functionName = normalizeFuncionKey(matched.funcion);
     }
   }
 
@@ -307,12 +328,16 @@ class _RecipeFormScreenState extends State<RecipeFormScreen> {
     final normalized = (formulation ?? '').trim().toLowerCase();
     switch (normalized) {
       case 'wp':
+      case 'sp':
         return 1;
       case 'wg':
         return 2;
       case 'sc':
+      case 'se':
+      case 'od':
         return 3;
       case 'ec':
+      case 'ew':
         return 4;
       case 'sl':
         return 5;
@@ -325,6 +350,27 @@ class _RecipeFormScreenState extends State<RecipeFormScreen> {
       default:
         return 999;
     }
+  }
+
+  int _getDoseLinePriority({
+    required _DoseLineInput line,
+    required SupplyRegistryItem? supply,
+  }) {
+    if (line.productName.text.trim().isEmpty) {
+      return 999;
+    }
+
+    final functionKey = normalizeFuncionKey(supply?.funcion);
+    final byFunction = funcionPriority(functionKey);
+    if (byFunction == funcionPriorityHigh) {
+      return byFunction;
+    }
+
+    final formulation =
+        supply?.formulation ??
+        line.formulation ??
+        _extractFormulationFromLabel(line.productName.text);
+    return _getFormulationPriority(formulation);
   }
 
   SupplyRegistryItem? _resolveSupplyForDoseLine(_DoseLineInput line) {
@@ -342,40 +388,30 @@ class _RecipeFormScreenState extends State<RecipeFormScreen> {
     return _findSupplyByCommercialName(productName);
   }
 
-  List<String> _buildFormulationWarnings() {
-    var hasSolid = false;
-    var hasOil = false;
-    var hasAdjuvant = false;
-
+  List<String> _buildMixValidationWarnings() {
+    final items = <MixValidationItem>[];
     for (final line in _doseLineInputs) {
       final supply = _resolveSupplyForDoseLine(line);
-      final formulation = (supply?.formulation ?? '').trim().toLowerCase();
-      if (formulation == 'wp' || formulation == 'wg') {
-        hasSolid = true;
+      final rawProductName = supply?.commercialName ?? line.productName.text;
+      final productName = _stripFormulationSuffix(rawProductName).trim();
+      if (productName.isEmpty) {
+        continue;
       }
-      if (formulation == 'aceite') {
-        hasOil = true;
-      }
-      if (formulation == 'coadyuvante') {
-        hasAdjuvant = true;
-      }
-    }
-
-    final warnings = <String>[];
-    if (hasSolid) {
-      warnings.add(
-        'Se recomienda premezclar formulaciones solidas antes de cargar al tanque.',
+      final formulation = _normalizeFormulationText(
+        supply?.formulation ??
+            line.formulation ??
+            _extractFormulationFromLabel(line.productName.text),
+      );
+      items.add(
+        MixValidationItem(
+          productName: _normalizeCommercialNameText(productName),
+          formulation: formulation,
+          type: supply?.type,
+          funcion: supply?.funcion,
+        ),
       );
     }
-    if (hasOil) {
-      warnings.add('Agregar aceites al final de la carga.');
-    }
-    if (hasAdjuvant) {
-      warnings.add(
-        'Verificar indicacion tecnica del coadyuvante; normalmente se agrega al final.',
-      );
-    }
-    return warnings;
+    return _mixValidationService.validateMix(items).warnings;
   }
 
   void _sortDoseLinesByFormulation() {
@@ -388,9 +424,7 @@ class _RecipeFormScreenState extends State<RecipeFormScreen> {
       final line = _doseLineInputs[i];
       final hasProduct = line.productName.text.trim().isNotEmpty;
       final supply = _resolveSupplyForDoseLine(line);
-      final priority = hasProduct
-          ? _getFormulationPriority(supply?.formulation)
-          : 999;
+      final priority = _getDoseLinePriority(line: line, supply: supply);
       sortable.add(
         _DoseLineSortItem(
           line: line,
@@ -442,114 +476,202 @@ class _RecipeFormScreenState extends State<RecipeFormScreen> {
     ).showSnackBar(SnackBar(content: Text(message)));
   }
 
+  String _buildFormSnapshot() {
+    final buffer = StringBuffer()
+      ..writeln(_titleController.text.trim())
+      ..writeln(_objectiveController.text.trim())
+      ..writeln(_cropController.text.trim())
+      ..writeln(_stageController.text.trim())
+      ..writeln(_waterVolumeController.text.trim())
+      ..writeln(_nozzleTypesController.text.trim())
+      ..writeln(_warningsController.text.trim())
+      ..writeln(_notesController.text.trim());
+
+    for (final input in _doseLineInputs) {
+      final product = _normalizeCommercialNameText(
+        _stripFormulationSuffix(input.productName.text),
+      );
+      final active = input.activeIngredient.text.trim().toUpperCase();
+      final dose = input.dose.text.trim();
+      final unit = input.unit.text.trim();
+      final formulation = _normalizeFormulationText(
+        input.formulation ??
+            _extractFormulationFromLabel(input.productName.text),
+      );
+      buffer.writeln('$product|$active|$dose|$unit|$formulation');
+    }
+    return buffer.toString();
+  }
+
+  bool _hasUnsavedChanges() {
+    return _buildFormSnapshot() != _initialFormSnapshot;
+  }
+
+  Future<bool> _confirmExitIfNeeded() async {
+    if (_saving) {
+      return false;
+    }
+    if (!_hasUnsavedChanges()) {
+      return true;
+    }
+    final decision = await showDialog<_UnsavedExitDecision>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Cambios sin guardar'),
+          content: const Text('Hay cambios sin guardar. Que deseas hacer?'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('Cancelar'),
+            ),
+            TextButton(
+              onPressed: () =>
+                  Navigator.of(dialogContext).pop(_UnsavedExitDecision.discard),
+              child: const Text('Salir sin guardar'),
+            ),
+            FilledButton(
+              onPressed: () =>
+                  Navigator.of(dialogContext).pop(_UnsavedExitDecision.save),
+              child: const Text('Guardar borrador'),
+            ),
+          ],
+        );
+      },
+    );
+    if (decision == _UnsavedExitDecision.discard) {
+      return true;
+    }
+    if (decision == _UnsavedExitDecision.save) {
+      await _saveRecipe(status: 'draft');
+      return false;
+    }
+    return false;
+  }
+
   @override
   Widget build(BuildContext context) {
     final isEditing = widget.recipe != null;
-    return Scaffold(
-      appBar: AppBar(title: Text(isEditing ? 'Editar receta' : 'Nueva receta')),
-      body: AbsorbPointer(
-        absorbing: _saving,
-        child: Form(
-          key: _formKey,
-          child: ResponsivePage(
-            child: ListView(
-              padding: const EdgeInsets.only(bottom: 32),
-              children: [
-                Text(
-                  'Titulo',
-                  style: Theme.of(
-                    context,
-                  ).textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w700),
-                ),
-                const SizedBox(height: 6),
-                TextFormField(
-                  controller: _titleController,
-                  decoration: const InputDecoration(
-                    hintText: 'Ej: 5ta. Aplicacion',
-                    border: OutlineInputBorder(),
-                    contentPadding: EdgeInsets.fromLTRB(12, 16, 12, 14),
-                  ),
-                  validator: _requiredValidator,
-                ),
-                const SizedBox(height: 12),
-                TextFormField(
-                  controller: _objectiveController,
-                  decoration: const InputDecoration(
-                    labelText: 'Objetivo',
-                    border: OutlineInputBorder(),
-                  ),
-                  validator: _requiredValidator,
-                ),
-                const SizedBox(height: 12),
-                _buildCropAndStageFields(),
-                const SizedBox(height: 12),
-                TextFormField(
-                  controller: _waterVolumeController,
-                  keyboardType: const TextInputType.numberWithOptions(
-                    decimal: true,
-                  ),
-                  decoration: const InputDecoration(
-                    labelText: 'Volumen de agua (L/ha)',
-                    border: OutlineInputBorder(),
-                  ),
-                  validator: _requiredValidator,
-                ),
-                const SizedBox(height: 12),
-                TextFormField(
-                  controller: _nozzleTypesController,
-                  decoration: const InputDecoration(
-                    labelText: 'Tipo de pico/boquilla',
-                    border: OutlineInputBorder(),
-                  ),
-                ),
-                const SizedBox(height: 18),
-                _buildDoseLinesEditor(),
-                const SizedBox(height: 12),
-                TextFormField(
-                  controller: _warningsController,
-                  minLines: 2,
-                  maxLines: 4,
-                  decoration: const InputDecoration(
-                    labelText: 'Advertencias',
-                    border: OutlineInputBorder(),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                TextFormField(
-                  controller: _notesController,
-                  minLines: 2,
-                  maxLines: 4,
-                  decoration: const InputDecoration(
-                    labelText: 'Observaciones',
-                    border: OutlineInputBorder(),
-                  ),
-                ),
-                const SizedBox(height: 22),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: [
-                    FilledButton.icon(
-                      onPressed: _saving
-                          ? null
-                          : () => _saveRecipe(status: 'draft'),
-                      icon: const Icon(Icons.save_outlined),
-                      label: const Text('Guardar borrador'),
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) async {
+        if (didPop) {
+          return;
+        }
+        final allowExit = await _confirmExitIfNeeded();
+        if (!allowExit || !context.mounted) {
+          return;
+        }
+        Navigator.of(context).pop(result);
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          title: Text(isEditing ? 'Editar receta' : 'Nueva receta'),
+        ),
+        body: AbsorbPointer(
+          absorbing: _saving,
+          child: Form(
+            key: _formKey,
+            child: ResponsivePage(
+              child: ListView(
+                padding: const EdgeInsets.only(bottom: 32),
+                children: [
+                  Text(
+                    'Titulo',
+                    style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                      fontWeight: FontWeight.w700,
                     ),
-                    OutlinedButton.icon(
-                      onPressed: _saving
-                          ? null
-                          : () => _saveRecipe(status: 'published'),
-                      icon: const Icon(Icons.publish_outlined),
-                      label: const Text('Publicar'),
+                  ),
+                  const SizedBox(height: 6),
+                  TextFormField(
+                    controller: _titleController,
+                    decoration: const InputDecoration(
+                      hintText: 'Ej: 5ta. Aplicacion',
+                      border: OutlineInputBorder(),
+                      contentPadding: EdgeInsets.fromLTRB(12, 16, 12, 14),
                     ),
-                  ],
-                ),
-                if (_saving) ...[
+                    validator: _requiredValidator,
+                  ),
                   const SizedBox(height: 12),
-                  const Center(child: CircularProgressIndicator()),
+                  TextFormField(
+                    controller: _objectiveController,
+                    decoration: const InputDecoration(
+                      labelText: 'Objetivo',
+                      border: OutlineInputBorder(),
+                    ),
+                    validator: _requiredValidator,
+                  ),
+                  const SizedBox(height: 12),
+                  _buildCropAndStageFields(),
+                  const SizedBox(height: 12),
+                  TextFormField(
+                    controller: _waterVolumeController,
+                    keyboardType: const TextInputType.numberWithOptions(
+                      decimal: true,
+                    ),
+                    decoration: const InputDecoration(
+                      labelText: 'Volumen de agua (L/ha)',
+                      border: OutlineInputBorder(),
+                    ),
+                    validator: _requiredValidator,
+                  ),
+                  const SizedBox(height: 12),
+                  TextFormField(
+                    controller: _nozzleTypesController,
+                    decoration: const InputDecoration(
+                      labelText: 'Tipo de pico/boquilla',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 18),
+                  _buildDoseLinesEditor(),
+                  const SizedBox(height: 12),
+                  TextFormField(
+                    controller: _warningsController,
+                    minLines: 2,
+                    maxLines: 4,
+                    decoration: const InputDecoration(
+                      labelText: 'Advertencias',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextFormField(
+                    controller: _notesController,
+                    minLines: 2,
+                    maxLines: 4,
+                    decoration: const InputDecoration(
+                      labelText: 'Observaciones',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 22),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      FilledButton.icon(
+                        onPressed: _saving
+                            ? null
+                            : () => _saveRecipe(status: 'draft'),
+                        icon: const Icon(Icons.save_outlined),
+                        label: const Text('Guardar borrador'),
+                      ),
+                      OutlinedButton.icon(
+                        onPressed: _saving
+                            ? null
+                            : () => _saveRecipe(status: 'published'),
+                        icon: const Icon(Icons.publish_outlined),
+                        label: const Text('Publicar'),
+                      ),
+                    ],
+                  ),
+                  if (_saving) ...[
+                    const SizedBox(height: 12),
+                    const Center(child: CircularProgressIndicator()),
+                  ],
                 ],
-              ],
+              ),
             ),
           ),
         ),
@@ -576,7 +698,7 @@ class _RecipeFormScreenState extends State<RecipeFormScreen> {
               TextFormField(
                 controller: _stageController,
                 decoration: const InputDecoration(
-                  labelText: 'Estado fenológico',
+                  labelText: 'Estado fenologico',
                   border: OutlineInputBorder(),
                 ),
                 validator: _requiredValidator,
@@ -601,7 +723,7 @@ class _RecipeFormScreenState extends State<RecipeFormScreen> {
               child: TextFormField(
                 controller: _stageController,
                 decoration: const InputDecoration(
-                  labelText: 'Estado fenológico',
+                  labelText: 'Estado fenologico',
                   border: OutlineInputBorder(),
                 ),
                 validator: _requiredValidator,
@@ -614,7 +736,7 @@ class _RecipeFormScreenState extends State<RecipeFormScreen> {
   }
 
   Widget _buildDoseLinesEditor() {
-    final formulationWarnings = _buildFormulationWarnings();
+    final mixWarnings = _buildMixValidationWarnings();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -637,7 +759,7 @@ class _RecipeFormScreenState extends State<RecipeFormScreen> {
                       OutlinedButton.icon(
                         onPressed: _sortDoseLinesByFormulation,
                         icon: const Icon(Icons.auto_fix_high_outlined),
-                        label: const Text('Ordenar por formulación'),
+                        label: const Text('Sugerir orden de carga'),
                       ),
                       TextButton.icon(
                         onPressed: () => setState(
@@ -661,7 +783,7 @@ class _RecipeFormScreenState extends State<RecipeFormScreen> {
                 OutlinedButton.icon(
                   onPressed: _sortDoseLinesByFormulation,
                   icon: const Icon(Icons.auto_fix_high_outlined),
-                  label: const Text('Ordenar por formulación'),
+                  label: const Text('Sugerir orden de carga'),
                 ),
                 const SizedBox(width: 6),
                 TextButton.icon(
@@ -682,7 +804,7 @@ class _RecipeFormScreenState extends State<RecipeFormScreen> {
         ),
         const SizedBox(height: 2),
         Text(
-          'Puede ordenar automáticamente por formulación y luego ajustar manualmente.',
+          'Puede sugerir el orden de carga automaticamente segun funcion y formulacion, y luego ajustar manualmente.',
           style: Theme.of(context).textTheme.bodySmall,
         ),
         if (_formulationOrderSuggested) ...[
@@ -699,35 +821,6 @@ class _RecipeFormScreenState extends State<RecipeFormScreen> {
             ),
           ),
         ],
-        if (_formulationOrderSuggested && formulationWarnings.isNotEmpty) ...[
-          const SizedBox(height: 8),
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(10),
-            decoration: BoxDecoration(
-              border: Border.all(color: Theme.of(context).dividerColor),
-              borderRadius: BorderRadius.circular(10),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Advertencias de formulación',
-                  style: Theme.of(
-                    context,
-                  ).textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w700),
-                ),
-                const SizedBox(height: 4),
-                ...formulationWarnings.map(
-                  (warning) => Padding(
-                    padding: const EdgeInsets.only(bottom: 2),
-                    child: Text('• $warning'),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
         const SizedBox(height: 6),
         for (var index = 0; index < _doseLineInputs.length; index++) ...[
           _DoseLineEditorRow(
@@ -741,6 +834,7 @@ class _RecipeFormScreenState extends State<RecipeFormScreen> {
             onMoveDown: index == _doseLineInputs.length - 1
                 ? null
                 : () => _moveDoseLine(from: index, to: index + 1),
+            onChanged: () => setState(() {}),
             onRemove: _doseLineInputs.length == 1
                 ? null
                 : () {
@@ -750,6 +844,35 @@ class _RecipeFormScreenState extends State<RecipeFormScreen> {
                   },
           ),
           const SizedBox(height: 8),
+        ],
+        if (mixWarnings.isNotEmpty) ...[
+          const SizedBox(height: 4),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              border: Border.all(color: Theme.of(context).dividerColor),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Validacion de mezcla',
+                  style: Theme.of(
+                    context,
+                  ).textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w700),
+                ),
+                const SizedBox(height: 4),
+                ...mixWarnings.map(
+                  (warning) => Padding(
+                    padding: const EdgeInsets.only(bottom: 2),
+                    child: Text('- $warning'),
+                  ),
+                ),
+              ],
+            ),
+          ),
         ],
       ],
     );
@@ -783,6 +906,7 @@ class _DoseLineEditorRow extends StatelessWidget {
     required this.supplies,
     this.onMoveUp,
     this.onMoveDown,
+    this.onChanged,
     this.onRemove,
   });
 
@@ -791,10 +915,25 @@ class _DoseLineEditorRow extends StatelessWidget {
   final List<SupplyRegistryItem> supplies;
   final VoidCallback? onMoveUp;
   final VoidCallback? onMoveDown;
+  final VoidCallback? onChanged;
   final VoidCallback? onRemove;
 
   @override
   Widget build(BuildContext context) {
+    Color resolveCardBackground() {
+      final brightness = Theme.of(context).brightness;
+      final seed =
+          '${input.selectedSupplyId ?? ''}|${input.productName.text.trim()}|$lineNumber';
+      final hue = (seed.hashCode.abs() % 360).toDouble();
+      final saturation = brightness == Brightness.dark ? 0.30 : 0.28;
+      final lightness = brightness == Brightness.dark ? 0.26 : 0.90;
+      return HSLColor.fromAHSL(1, hue, saturation, lightness).toColor();
+    }
+
+    void notifyChanged() {
+      onChanged?.call();
+    }
+
     Widget buildProductField() {
       final hasOptions = supplies.any((item) => (item.id ?? '').isNotEmpty);
       return TextFormField(
@@ -811,10 +950,12 @@ class _DoseLineEditorRow extends StatelessWidget {
                 onPressed: () {
                   input.selectedSupplyId = null;
                   input.formulation = null;
+                  input.functionName = '';
                   input.productName.clear();
                   input.activeIngredient.clear();
                   input.dose.clear();
                   input.unit.text = 'Lt.';
+                  notifyChanged();
                 },
                 icon: const Icon(Icons.clear),
               ),
@@ -834,10 +975,12 @@ class _DoseLineEditorRow extends StatelessWidget {
                         if (picked.cleared) {
                           input.selectedSupplyId = null;
                           input.formulation = null;
+                          input.functionName = '';
                           input.productName.clear();
                           input.activeIngredient.clear();
                           input.dose.clear();
                           input.unit.text = 'Lt.';
+                          notifyChanged();
                           return;
                         }
                         final selected = picked.supply;
@@ -854,6 +997,10 @@ class _DoseLineEditorRow extends StatelessWidget {
                         input.activeIngredient.text =
                             selected.activeIngredient ?? '';
                         input.unit.text = _resolveSelectedUnit(selected.unit);
+                        input.functionName = normalizeFuncionKey(
+                          selected.funcion,
+                        );
+                        notifyChanged();
                       },
                 icon: const Icon(Icons.search),
               ),
@@ -874,10 +1021,12 @@ class _DoseLineEditorRow extends StatelessWidget {
                 if (picked.cleared) {
                   input.selectedSupplyId = null;
                   input.formulation = null;
+                  input.functionName = '';
                   input.productName.clear();
                   input.activeIngredient.clear();
                   input.dose.clear();
                   input.unit.text = 'Lt.';
+                  notifyChanged();
                   return;
                 }
                 final selected = picked.supply;
@@ -891,6 +1040,8 @@ class _DoseLineEditorRow extends StatelessWidget {
                 input.productName.text = _formatSupplyProductLabel(selected);
                 input.activeIngredient.text = selected.activeIngredient ?? '';
                 input.unit.text = _resolveSelectedUnit(selected.unit);
+                input.functionName = normalizeFuncionKey(selected.funcion);
+                notifyChanged();
               },
       );
     }
@@ -939,6 +1090,7 @@ class _DoseLineEditorRow extends StatelessWidget {
     }
 
     return Card(
+      color: resolveCardBackground(),
       child: Padding(
         padding: const EdgeInsets.all(8),
         child: LayoutBuilder(
@@ -949,43 +1101,78 @@ class _DoseLineEditorRow extends StatelessWidget {
                 Row(
                   children: [
                     Expanded(child: buildProductField()),
-                    const SizedBox(width: 8),
-                    buildActions(),
+                    if (!compact) ...[const SizedBox(width: 8), buildActions()],
                   ],
                 ),
                 const SizedBox(height: 6),
                 Row(
                   children: [
-                    SizedBox(
-                      width: compact ? 110 : 130,
-                      child: TextFormField(
-                        controller: input.unit,
-                        readOnly: true,
-                        decoration: const InputDecoration(
-                          labelText: 'Unidad',
-                          border: OutlineInputBorder(),
-                          isDense: true,
-                          contentPadding: EdgeInsets.fromLTRB(10, 12, 10, 10),
+                    if (compact) ...[
+                      Expanded(
+                        flex: 10,
+                        child: TextFormField(
+                          controller: input.unit,
+                          readOnly: true,
+                          decoration: const InputDecoration(
+                            labelText: 'Unidad',
+                            border: OutlineInputBorder(),
+                            isDense: true,
+                            contentPadding: EdgeInsets.fromLTRB(10, 12, 10, 10),
+                          ),
                         ),
                       ),
-                    ),
-                    const SizedBox(width: 8),
-                    SizedBox(
-                      width: compact ? 130 : 160,
-                      child: TextFormField(
-                        controller: input.dose,
-                        keyboardType: const TextInputType.numberWithOptions(
-                          decimal: true,
-                        ),
-                        decoration: const InputDecoration(
-                          labelText: 'Dosis',
-                          border: OutlineInputBorder(),
-                          isDense: true,
-                          contentPadding: EdgeInsets.fromLTRB(10, 12, 10, 10),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        flex: 12,
+                        child: TextFormField(
+                          controller: input.dose,
+                          keyboardType: const TextInputType.numberWithOptions(
+                            decimal: true,
+                          ),
+                          onChanged: (_) => notifyChanged(),
+                          decoration: const InputDecoration(
+                            labelText: 'Dosis',
+                            border: OutlineInputBorder(),
+                            isDense: true,
+                            contentPadding: EdgeInsets.fromLTRB(10, 12, 10, 10),
+                          ),
                         ),
                       ),
-                    ),
-                    if (!compact) const Spacer(),
+                      const SizedBox(width: 8),
+                      buildActions(),
+                    ] else ...[
+                      SizedBox(
+                        width: 130,
+                        child: TextFormField(
+                          controller: input.unit,
+                          readOnly: true,
+                          decoration: const InputDecoration(
+                            labelText: 'Unidad',
+                            border: OutlineInputBorder(),
+                            isDense: true,
+                            contentPadding: EdgeInsets.fromLTRB(10, 12, 10, 10),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      SizedBox(
+                        width: 160,
+                        child: TextFormField(
+                          controller: input.dose,
+                          keyboardType: const TextInputType.numberWithOptions(
+                            decimal: true,
+                          ),
+                          onChanged: (_) => notifyChanged(),
+                          decoration: const InputDecoration(
+                            labelText: 'Dosis',
+                            border: OutlineInputBorder(),
+                            isDense: true,
+                            contentPadding: EdgeInsets.fromLTRB(10, 12, 10, 10),
+                          ),
+                        ),
+                      ),
+                      const Spacer(),
+                    ],
                   ],
                 ),
               ],
@@ -1147,6 +1334,7 @@ class _DoseLineInput {
     required this.dose,
     required this.unit,
     this.formulation,
+    this.functionName = '',
     this.selectedSupplyId,
   });
 
@@ -1155,6 +1343,7 @@ class _DoseLineInput {
   final TextEditingController dose;
   final TextEditingController unit;
   String? formulation;
+  String functionName;
   String? selectedSupplyId;
 
   factory _DoseLineInput.empty() {
@@ -1184,6 +1373,7 @@ class _DoseLineInput {
       formulation: _normalizeFormulationText(
         line.formulation ?? _extractFormulationFromLabel(line.productName),
       ),
+      functionName: normalizeFuncionKey(line.functionName),
       selectedSupplyId: null,
     );
   }
@@ -1203,7 +1393,7 @@ class _DoseLineInput {
       activeIngredient: active.isEmpty ? null : active,
       dose: parseFlexibleDouble(dose.text.trim()),
       unit: unit.text.trim().isEmpty ? 'Lt.' : unit.text.trim(),
-      functionName: '',
+      functionName: normalizeFuncionKey(functionName),
     );
   }
 

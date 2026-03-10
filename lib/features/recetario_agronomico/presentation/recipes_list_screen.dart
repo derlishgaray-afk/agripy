@@ -573,7 +573,9 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
     return immutable;
   }
 
-  Future<Map<String, double>> _resolveOrderPlotAreas(ApplicationOrder order) async {
+  Future<Map<String, double>> _resolveOrderPlotAreas(
+    ApplicationOrder order,
+  ) async {
     final plots = _splitUniquePlots(order.plotName);
     final knownByField = await _loadFieldLotAreasForFarm(order.farmName);
     final result = <String, double>{};
@@ -594,7 +596,9 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
     if (unresolved.isNotEmpty) {
       final baseArea = order.areaHa > 0
           ? order.areaHa
-          : (order.affectedAreaHa > 0 ? order.affectedAreaHa : plots.length.toDouble());
+          : (order.affectedAreaHa > 0
+                ? order.affectedAreaHa
+                : plots.length.toDouble());
       final remaining = (baseArea - knownTotal).clamp(0, baseArea).toDouble();
       final fallbackArea = remaining > 0
           ? remaining / unresolved.length
@@ -655,13 +659,14 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
     final selectedPlannedTanks = order.tankCount * selectedShare;
 
     final selectedKeys = selectedPlots.map(_normalizePlotKey).toSet();
-    final orderPlotKeys = allPlots.map(_normalizePlotKey).toList(growable: false);
+    final orderPlotKeys = allPlots
+        .map(_normalizePlotKey)
+        .toList(growable: false);
     var selectedAppliedTanks = 0.0;
     for (final entry in order.execution.tankApplications) {
-      final entryPlots = _splitUniquePlots(entry.plotName)
-          .map(_normalizePlotKey)
-          .where((value) => value.isNotEmpty)
-          .toSet();
+      final entryPlots = _splitUniquePlots(
+        entry.plotName,
+      ).map(_normalizePlotKey).where((value) => value.isNotEmpty).toSet();
       final effectiveEntryPlots = entryPlots.isEmpty
           ? orderPlotKeys.toSet()
           : entryPlots;
@@ -687,6 +692,37 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
       return 0;
     }
     return pending;
+  }
+
+  double _toOrderEquivalentTankCount({
+    required ApplicationOrder order,
+    required double tankCount,
+    required double tankCapacityLt,
+  }) {
+    if (tankCount <= 0) {
+      return 0;
+    }
+    if (tankCapacityLt > 0 && order.tankCapacityLt > 0) {
+      return tankCount * (tankCapacityLt / order.tankCapacityLt);
+    }
+    return tankCount;
+  }
+
+  bool _isPartialOrderRegistration({
+    required ApplicationOrder order,
+    required double tankCount,
+    required double tankCapacityLt,
+  }) {
+    final pending = _pendingTankCount(order);
+    if (pending <= 0) {
+      return false;
+    }
+    final equivalent = _toOrderEquivalentTankCount(
+      order: order,
+      tankCount: tankCount,
+      tankCapacityLt: tankCapacityLt,
+    );
+    return equivalent > 0 && equivalent < pending - 0.000001;
   }
 
   double _plannedTankCount(ApplicationOrder? order) {
@@ -751,7 +787,9 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
 
   Future<DateTime?> _pickDateTime({DateTime? initialDateTime}) async {
     final now = DateTime.now();
-    final initial = (initialDateTime ?? now).isAfter(now) ? now : initialDateTime ?? now;
+    final initial = (initialDateTime ?? now).isAfter(now)
+        ? now
+        : initialDateTime ?? now;
     final pickedDate = await showDatePicker(
       context: context,
       firstDate: DateTime(now.year - 5),
@@ -796,7 +834,32 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
     if (!mounted) {
       return null;
     }
-    var selectedPlots = availablePlots.toSet();
+    const pendingEpsilon = 0.000001;
+    final pendingByPlot = <String, double>{
+      for (final plot in availablePlots)
+        plot: _selectedPlotsPendingTankCount(
+          order: order,
+          allPlots: availablePlots,
+          selectedPlots: {plot},
+          plotAreaByName: plotAreaByName,
+        ),
+    };
+    bool isPartialRegistration() {
+      final tankCount = parseFlexibleDouble(tankCountController.text.trim());
+      final tankCapacity = _parseTankCapacityInt(tankCapacityController.text);
+      return _isPartialOrderRegistration(
+        order: order,
+        tankCount: tankCount,
+        tankCapacityLt: tankCapacity,
+      );
+    }
+
+    var selectedPlots = availablePlots
+        .where((plot) => (pendingByPlot[plot] ?? 0) > pendingEpsilon)
+        .toSet();
+    final fullyAppliedPlots = availablePlots
+        .where((plot) => (pendingByPlot[plot] ?? 0) <= pendingEpsilon)
+        .toList(growable: false);
     var selectedPending = _selectedPlotsPendingTankCount(
       order: order,
       allPlots: availablePlots,
@@ -836,6 +899,9 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
                         if (value == null || value.isEmpty) {
                           return 'Selecciona al menos un lote aplicado.';
                         }
+                        if (value.length > 1 && isPartialRegistration()) {
+                          return 'Para registro parcial selecciona solo una parcela.';
+                        }
                         return null;
                       },
                       builder: (fieldState) {
@@ -848,34 +914,53 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
                           child: Wrap(
                             spacing: 8,
                             runSpacing: 8,
-                            children: availablePlots.map((plot) {
-                              return FilterChip(
-                                label: Text(plot),
-                                selected: selectedPlots.contains(plot),
-                                onSelected: (checked) {
-                                  setDialogState(() {
-                                    if (checked) {
-                                      selectedPlots.add(plot);
-                                    } else {
-                                      selectedPlots.remove(plot);
-                                    }
-                                    fieldState.didChange(
-                                      selectedPlots.toSet(),
-                                    );
-                                    final suggested =
-                                        _selectedPlotsPendingTankCount(
-                                          order: order,
-                                          allPlots: availablePlots,
-                                          selectedPlots: selectedPlots,
-                                          plotAreaByName: plotAreaByName,
-                                        );
-                                    tankCountController.text = suggested > 0
-                                        ? suggested.toStringAsFixed(2)
-                                        : '';
-                                  });
-                                },
-                              );
-                            }).toList(growable: false),
+                            children: availablePlots
+                                .map((plot) {
+                                  final isFullyApplied =
+                                      (pendingByPlot[plot] ?? 0) <=
+                                      pendingEpsilon;
+                                  return FilterChip(
+                                    label: Text(
+                                      plot,
+                                      style: isFullyApplied
+                                          ? TextStyle(
+                                              color: Theme.of(
+                                                context,
+                                              ).colorScheme.onSurfaceVariant,
+                                            )
+                                          : null,
+                                    ),
+                                    selected: selectedPlots.contains(plot),
+                                    onSelected: isFullyApplied
+                                        ? null
+                                        : (checked) {
+                                            setDialogState(() {
+                                              if (checked) {
+                                                selectedPlots.add(plot);
+                                              } else {
+                                                selectedPlots.remove(plot);
+                                              }
+                                              fieldState.didChange(
+                                                selectedPlots.toSet(),
+                                              );
+                                              final suggested =
+                                                  _selectedPlotsPendingTankCount(
+                                                    order: order,
+                                                    allPlots: availablePlots,
+                                                    selectedPlots:
+                                                        selectedPlots,
+                                                    plotAreaByName:
+                                                        plotAreaByName,
+                                                  );
+                                              tankCountController.text =
+                                                  suggested > 0
+                                                  ? suggested.toStringAsFixed(2)
+                                                  : '';
+                                            });
+                                          },
+                                  );
+                                })
+                                .toList(growable: false),
                           ),
                         );
                       },
@@ -887,6 +972,29 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
                     Text(
                       'Tanques pendientes (lotes seleccionados): ${selectedPending.toStringAsFixed(2)}',
                     ),
+                    if (fullyAppliedPlots.isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 6),
+                        child: Text(
+                          'Parcelas al 100% aplicado bloqueadas: ${fullyAppliedPlots.join(', ')}',
+                          style: TextStyle(
+                            color: Theme.of(
+                              context,
+                            ).colorScheme.onSurfaceVariant,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ),
+                    if (selectedPlots.length > 1 && isPartialRegistration())
+                      Padding(
+                        padding: const EdgeInsets.only(top: 6),
+                        child: Text(
+                          'El registro parcial se carga de a una parcela.',
+                          style: TextStyle(
+                            color: Theme.of(context).colorScheme.error,
+                          ),
+                        ),
+                      ),
                     const SizedBox(height: 10),
                     TextFormField(
                       controller: tankCountController,
@@ -904,6 +1012,10 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
                         final number = parseFlexibleDouble(value?.trim());
                         if (number <= 0) {
                           return 'Ingresa una cantidad mayor a cero.';
+                        }
+                        if (selectedPlots.length > 1 &&
+                            isPartialRegistration()) {
+                          return 'Para registro parcial selecciona solo una parcela.';
                         }
                         final capacity = _parseTankCapacityInt(
                           tankCapacityController.text,
@@ -937,6 +1049,10 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
                         final number = _parseTankCapacityInt(value);
                         if (number <= 0) {
                           return 'Ingresa una capacidad valida.';
+                        }
+                        if (selectedPlots.length > 1 &&
+                            isPartialRegistration()) {
+                          return 'Para registro parcial selecciona solo una parcela.';
                         }
                         final tankCount = parseFlexibleDouble(
                           tankCountController.text.trim(),
@@ -1001,6 +1117,17 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
                     final tankCapacity = _parseTankCapacityInt(
                       tankCapacityController.text,
                     );
+                    if (selectedPlots.length > 1 &&
+                        _isPartialOrderRegistration(
+                          order: order,
+                          tankCount: tankCount,
+                          tankCapacityLt: tankCapacity,
+                        )) {
+                      _showSnack(
+                        'Para registro parcial debes seleccionar solo una parcela.',
+                      );
+                      return;
+                    }
                     Navigator.of(dialogContext).pop(
                       _TankApplicationInput(
                         appliedAt: appliedAt,

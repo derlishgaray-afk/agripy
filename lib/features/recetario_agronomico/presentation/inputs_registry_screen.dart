@@ -29,11 +29,27 @@ class _InputsRegistryScreenState extends State<InputsRegistryScreen> {
     'WP',
     'WG',
     'SC',
+    'SE',
+    'OD',
     'EC',
+    'EW',
     'SL',
+    'SP',
     'Coadyuvante',
     'Aceite',
     'Otro',
+  ];
+  static const List<String> _functionOptions = <String>[
+    'ninguna',
+    'corrector_ph',
+    'secuestrante_dureza',
+    'antideriva',
+    'antiespumante',
+    'adherente',
+    'humectante',
+    'penetrante',
+    'acondicionador_agua',
+    'otro',
   ];
 
   bool get _canEdit => widget.session.access.canEditRecetario;
@@ -62,6 +78,16 @@ class _InputsRegistryScreenState extends State<InputsRegistryScreen> {
     return 'Otro';
   }
 
+  String _normalizeFunction(String? value) {
+    final raw = (value ?? '').trim().toLowerCase();
+    for (final option in _functionOptions) {
+      if (option.toLowerCase() == raw) {
+        return option;
+      }
+    }
+    return 'ninguna';
+  }
+
   @override
   void initState() {
     super.initState();
@@ -83,6 +109,10 @@ class _InputsRegistryScreenState extends State<InputsRegistryScreen> {
     var unit = existing?.unit == 'Kg.' ? 'Kg.' : 'Lt.';
     var type = _normalizeSupplyType(existing?.type);
     var formulation = _normalizeFormulation(existing?.formulation);
+    var funcion = _normalizeFunction(existing?.funcion);
+    if (type != 'coadyuvante') {
+      funcion = 'ninguna';
+    }
     final isEditing = existing != null;
 
     await showDialog<void>(
@@ -146,6 +176,9 @@ class _InputsRegistryScreenState extends State<InputsRegistryScreen> {
                       onChanged: (value) {
                         setModalState(() {
                           type = value ?? 'Otros';
+                          if (type != 'coadyuvante') {
+                            funcion = 'ninguna';
+                          }
                         });
                       },
                     ),
@@ -169,6 +202,29 @@ class _InputsRegistryScreenState extends State<InputsRegistryScreen> {
                           formulation = value ?? 'Otro';
                         });
                       },
+                    ),
+                    const SizedBox(height: 12),
+                    DropdownButtonFormField<String>(
+                      initialValue: funcion,
+                      decoration: const InputDecoration(
+                        labelText: 'Funcion (opcional)',
+                        border: OutlineInputBorder(),
+                      ),
+                      items: _functionOptions
+                          .map(
+                            (option) => DropdownMenuItem<String>(
+                              value: option,
+                              child: Text(option),
+                            ),
+                          )
+                          .toList(growable: false),
+                      onChanged: type == 'coadyuvante'
+                          ? (value) {
+                              setModalState(() {
+                                funcion = _normalizeFunction(value);
+                              });
+                            }
+                          : null,
                     ),
                   ],
                 ),
@@ -194,6 +250,9 @@ class _InputsRegistryScreenState extends State<InputsRegistryScreen> {
                       unit: unit,
                       type: _normalizeSupplyType(type),
                       formulation: _normalizeFormulation(formulation),
+                      funcion: _normalizeSupplyType(type) == 'coadyuvante'
+                          ? _normalizeFunction(funcion)
+                          : 'ninguna',
                     );
                     try {
                       if (isEditing) {
@@ -260,7 +319,9 @@ class _InputsRegistryScreenState extends State<InputsRegistryScreen> {
     if (!mounted) {
       return;
     }
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 
   @override
@@ -298,7 +359,10 @@ class _InputsRegistryScreenState extends State<InputsRegistryScreen> {
                   child: ListTile(
                     title: Text(item.commercialName),
                     subtitle: Text(
-                      'Principio activo: ${item.activeIngredient ?? "-"}\nUnidad: ${item.unit}    Tipo: ${item.type}    Formulación: ${_normalizeFormulation(item.formulation)}',
+                      'Principio activo: ${item.activeIngredient ?? "-"}\n'
+                      'Unidad: ${item.unit}    Tipo: ${item.type}    '
+                      'Formulación: ${_normalizeFormulation(item.formulation)}    '
+                      'Funcion: ${_normalizeFunction(item.funcion)}',
                     ),
                     isThreeLine: true,
                     trailing: _canEdit

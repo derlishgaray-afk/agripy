@@ -5,8 +5,12 @@ import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 
 import '../domain/models.dart';
+import 'mix_validation_service.dart';
 
 class RecetarioPdfService {
+  final MixValidationService _mixValidationService =
+      const MixValidationService();
+
   Future<Uint8List> buildProfessionalPdf(
     String tenantName,
     Recipe recipe,
@@ -15,6 +19,7 @@ class RecetarioPdfService {
   ) async {
     final document = pw.Document();
     final dateFormat = DateFormat('dd/MM/yyyy HH:mm');
+    final mixWarnings = _resolveMixValidationWarnings(recipe);
 
     document.addPage(
       pw.Page(
@@ -31,6 +36,10 @@ class RecetarioPdfService {
               _buildDoseTable(recipe, order),
               pw.SizedBox(height: 10),
               _buildWaterVolume(recipe),
+              if (mixWarnings.isNotEmpty) ...[
+                pw.SizedBox(height: 10),
+                _buildMixValidation(mixWarnings),
+              ],
               pw.SizedBox(height: 10),
               _buildSafety(recipe),
               pw.Spacer(),
@@ -252,6 +261,75 @@ class RecetarioPdfService {
               highlightValue: true,
             ),
           ],
+        ],
+      ),
+    );
+  }
+
+  List<String> _resolveMixValidationWarnings(Recipe recipe) {
+    final items = <MixValidationItem>[];
+    for (final line in recipe.doseLines) {
+      final product = _stripFormulationSuffix(line.productName).trim();
+      if (product.isEmpty) {
+        continue;
+      }
+      final formulation =
+          (line.formulation ?? _extractFormulationFromLabel(line.productName))
+              ?.trim();
+      final functionName = line.functionName.trim();
+      final inferredType =
+          ((formulation ?? '').toLowerCase() == 'coadyuvante' ||
+              functionName.isNotEmpty)
+          ? 'coadyuvante'
+          : null;
+      items.add(
+        MixValidationItem(
+          productName: product,
+          formulation: formulation,
+          type: inferredType,
+          funcion: functionName.isEmpty ? null : functionName,
+        ),
+      );
+    }
+    return _mixValidationService.validateMix(items).warnings;
+  }
+
+  String _stripFormulationSuffix(String value) {
+    return value.replaceAll(RegExp(r'\s*\([^()]*\)\s*$'), '').trim();
+  }
+
+  String? _extractFormulationFromLabel(String value) {
+    final match = RegExp(r'\(([^()]+)\)\s*$').firstMatch(value.trim());
+    final formulation = (match?.group(1) ?? '').trim();
+    if (formulation.isEmpty) {
+      return null;
+    }
+    return formulation;
+  }
+
+  pw.Widget _buildMixValidation(List<String> warnings) {
+    return pw.Container(
+      width: double.infinity,
+      padding: const pw.EdgeInsets.all(10),
+      decoration: pw.BoxDecoration(
+        color: PdfColors.grey100,
+        border: pw.Border.all(color: PdfColors.green200, width: 1),
+        borderRadius: pw.BorderRadius.circular(4),
+      ),
+      child: pw.Column(
+        crossAxisAlignment: pw.CrossAxisAlignment.start,
+        children: [
+          _sectionTitle('Validacion de mezcla'),
+          pw.SizedBox(height: 4),
+          ...warnings.map(
+            (warning) => pw.Padding(
+              padding: const pw.EdgeInsets.only(bottom: 2),
+              child: pw.Text(
+                '- $warning',
+                style: const pw.TextStyle(fontSize: 10),
+              ),
+            ),
+          ),
         ],
       ),
     );

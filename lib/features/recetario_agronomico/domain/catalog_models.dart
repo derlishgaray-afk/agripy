@@ -4,20 +4,36 @@ String _normalizeSupplyCommercialName(String value) {
   return value.trim().replaceAll(RegExp(r'\s+'), ' ').toUpperCase();
 }
 
+const String _defaultSupplyFunction = 'ninguna';
+const Set<String> _allowedSupplyFunctions = <String>{
+  'ninguna',
+  'corrector_ph',
+  'secuestrante_dureza',
+  'antideriva',
+  'antiespumante',
+  'adherente',
+  'humectante',
+  'penetrante',
+  'acondicionador_agua',
+  'otro',
+};
+
+String _normalizeSupplyFunction(String? value) {
+  final normalized = (value ?? '').trim().toLowerCase();
+  if (_allowedSupplyFunctions.contains(normalized)) {
+    return normalized;
+  }
+  return _defaultSupplyFunction;
+}
+
 class FieldLot {
-  const FieldLot({
-    required this.name,
-    required this.areaHa,
-  });
+  const FieldLot({required this.name, required this.areaHa});
 
   final String name;
   final double areaHa;
 
   Map<String, dynamic> toMap() {
-    return {
-      'name': name,
-      'areaHa': areaHa,
-    };
+    return {'name': name, 'areaHa': areaHa};
   }
 
   factory FieldLot.fromMap(Map<String, dynamic> map) {
@@ -92,6 +108,7 @@ class SupplyRegistryItem {
     required this.unit,
     required this.type,
     required this.formulation,
+    this.funcion = _defaultSupplyFunction,
   });
 
   final String? id;
@@ -100,6 +117,7 @@ class SupplyRegistryItem {
   final String unit;
   final String type;
   final String formulation;
+  final String funcion;
 
   SupplyRegistryItem copyWith({
     String? id,
@@ -108,6 +126,7 @@ class SupplyRegistryItem {
     String? unit,
     String? type,
     String? formulation,
+    String? funcion,
   }) {
     return SupplyRegistryItem(
       id: id ?? this.id,
@@ -116,16 +135,20 @@ class SupplyRegistryItem {
       unit: unit ?? this.unit,
       type: type ?? this.type,
       formulation: formulation ?? this.formulation,
+      funcion: funcion ?? this.funcion,
     );
   }
 
   Map<String, dynamic> toMap() {
+    final normalizedFunction = _normalizeSupplyFunction(funcion);
     return {
       'commercialName': _normalizeSupplyCommercialName(commercialName),
       'activeIngredient': activeIngredient,
       'unit': unit,
       'type': type,
       'formulation': formulation,
+      if (normalizedFunction != _defaultSupplyFunction)
+        'funcion': normalizedFunction,
     };
   }
 
@@ -140,6 +163,7 @@ class SupplyRegistryItem {
       unit: (map['unit'] as String? ?? '').trim(),
       type: (map['type'] as String? ?? '').trim(),
       formulation: (map['formulation'] as String? ?? 'Otro').trim(),
+      funcion: _normalizeSupplyFunction(map['funcion'] as String?),
     );
   }
 }
@@ -172,9 +196,7 @@ class OperatorRegistryItem {
   }
 
   Map<String, dynamic> toMap() {
-    return {
-      'name': name,
-    };
+    return {'name': name};
   }
 
   factory OperatorRegistryItem.fromMap(Map<String, dynamic> map, {String? id}) {

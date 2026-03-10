@@ -5,18 +5,28 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
 import '../domain/models.dart';
+import 'mix_validation_service.dart';
 
 class RecetarioPngService {
+  final MixValidationService _mixValidationService =
+      const MixValidationService();
+
   Future<Uint8List> buildEmissionPng({
     required String tenantName,
     required Recipe recipe,
     required RecipeEmissionData emission,
   }) async {
     const width = 1080;
+    final mixWarnings = _resolveMixValidationWarnings(recipe);
     final rowCount = recipe.doseLines.length;
     final compact = rowCount > 9;
     final extraRows = (rowCount - 6).clamp(0, 50);
-    final renderHeight = (1528 + (extraRows * 56)).clamp(1528, 5000).toInt();
+    final warningExtra = mixWarnings.isEmpty
+        ? 0
+        : (120 + (mixWarnings.length * 52));
+    final renderHeight = (1528 + (extraRows * 56) + warningExtra)
+        .clamp(1528, 5000)
+        .toInt();
     const pagePadding = 48.0;
 
     final recorder = ui.PictureRecorder();
@@ -445,6 +455,64 @@ class RecetarioPngService {
     }
     y += waterHeight + (compact ? 12 : 18);
 
+    if (mixWarnings.isNotEmpty) {
+      final validationTitle = 'Validacion de mezcla';
+      final validationTitleStyle = sectionTitleStyle.copyWith(
+        fontSize: compact ? 28 : 34,
+      );
+      var warningTextHeight = 0.0;
+      for (final warning in mixWarnings) {
+        warningTextHeight +=
+            _measureTextHeight('- $warning', bodyStyle, pageWidth - 28) + 4;
+      }
+      final validationHeight =
+          16 +
+          _measureTextHeight(
+            validationTitle,
+            validationTitleStyle,
+            pageWidth - 28,
+          ) +
+          6 +
+          warningTextHeight +
+          10;
+      final validationRect = Rect.fromLTWH(
+        pagePadding,
+        y,
+        pageWidth,
+        validationHeight,
+      );
+      _drawBox(
+        canvas,
+        rect: validationRect,
+        fillColor: const Color(0xFFF7FAF7),
+        borderColor: const Color(0xFFB7D2BA),
+        borderWidth: 1.6,
+        radius: 8,
+      );
+      var vy = y + 10;
+      vy = _paintBlockText(
+        canvas,
+        text: validationTitle,
+        x: pagePadding + (compact ? 10 : 14),
+        y: vy,
+        maxWidth: pageWidth - 28,
+        style: validationTitleStyle,
+      );
+      vy += 4;
+      for (final warning in mixWarnings) {
+        vy = _paintBlockText(
+          canvas,
+          text: '- $warning',
+          x: pagePadding + (compact ? 10 : 14),
+          y: vy,
+          maxWidth: pageWidth - 28,
+          style: bodyStyle,
+        );
+        vy += 2;
+      }
+      y += validationHeight + (compact ? 12 : 18);
+    }
+
     final warningsText = _safe(recipe.warnings);
     final notesText = _safe(recipe.notes);
     final safetyTitle = 'Seguridad y restricciones';
@@ -838,6 +906,47 @@ class RecetarioPngService {
       return productName;
     }
     return '$productName ($formulation)';
+  }
+
+  List<String> _resolveMixValidationWarnings(Recipe recipe) {
+    final items = <MixValidationItem>[];
+    for (final line in recipe.doseLines) {
+      final product = _stripFormulationSuffix(_safe(line.productName));
+      if (product.isEmpty) {
+        continue;
+      }
+      final formulation =
+          (line.formulation ?? _extractFormulationFromLabel(line.productName))
+              ?.trim();
+      final functionName = line.functionName.trim();
+      final inferredType =
+          ((formulation ?? '').toLowerCase() == 'coadyuvante' ||
+              functionName.isNotEmpty)
+          ? 'coadyuvante'
+          : null;
+      items.add(
+        MixValidationItem(
+          productName: product,
+          formulation: formulation,
+          type: inferredType,
+          funcion: functionName.isEmpty ? null : functionName,
+        ),
+      );
+    }
+    return _mixValidationService.validateMix(items).warnings;
+  }
+
+  String _stripFormulationSuffix(String value) {
+    return value.replaceAll(RegExp(r'\s*\([^()]*\)\s*$'), '').trim();
+  }
+
+  String? _extractFormulationFromLabel(String value) {
+    final match = RegExp(r'\(([^()]+)\)\s*$').firstMatch(value.trim());
+    final formulation = (match?.group(1) ?? '').trim();
+    if (formulation.isEmpty) {
+      return null;
+    }
+    return formulation;
   }
 }
 
