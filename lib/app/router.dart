@@ -132,6 +132,10 @@ class TenantBlockingSupportContext {
     }
     return raw.replaceAll(RegExp(r'\D'), '').isNotEmpty;
   }
+
+  bool get canRequestActivation {
+    return isPrincipalUser && blockReason != TenantBlockReason.suspended;
+  }
 }
 
 class _SystemAdminContact {
@@ -316,6 +320,8 @@ class SessionController extends ChangeNotifier {
       'createdAt': Timestamp.fromDate(now),
       'createdBy': user.uid,
       'trialEndsAt': Timestamp.fromDate(trialEndsAt),
+      'accessEndsAt': null,
+      'subscriptionStatus': 'active',
     }, SetOptions(merge: true));
 
     batch.set(tenantUserRef, {
@@ -495,6 +501,13 @@ class SessionController extends ChangeNotifier {
             : ' Fecha de vencimiento: ${_formatDate(error.trialEndsAt!)}.';
         return 'El periodo de prueba de la empresa "${error.tenantName}" '
             'ha vencido.$dueDate Contacta al administrador del sistema.';
+      case TenantBlockReason.subscriptionExpired:
+        final dueDate = error.trialEndsAt == null
+            ? ''
+            : ' Fecha de vencimiento: ${_formatDate(error.trialEndsAt!)}.';
+        return 'La suscripcion de la empresa "${error.tenantName}" '
+            'esta vencida o pendiente de aprobacion.$dueDate '
+            'Solicita activacion al administrador del sistema.';
     }
   }
 
@@ -506,7 +519,24 @@ class SessionController extends ChangeNotifier {
     return '$day/$month/$year';
   }
 
-  Uri? buildTenantSupportWhatsappUri() {
+  String _tenantPlanLabel(TenantPlan plan) {
+    switch (plan) {
+      case TenantPlan.trial:
+        return 'trial';
+      case TenantPlan.basic:
+        return 'basic (mensual)';
+      case TenantPlan.pro:
+        return 'pro (anual)';
+      case TenantPlan.custom:
+        return 'custom (editable)';
+    }
+  }
+
+  Uri? buildTenantSupportWhatsappUri({
+    TenantPlan? requestedPlan,
+    String? activationReason,
+    DateTime? requestedCustomEndsAt,
+  }) {
     final context = tenantBlockingSupportContext;
     if (context == null || !context.canContactSystemAdmin) {
       return null;
@@ -519,27 +549,60 @@ class SessionController extends ChangeNotifier {
       return null;
     }
 
-    final reasonText = context.blockReason == TenantBlockReason.suspended
-        ? 'empresa suspendida'
-        : 'trial vencido';
-    final trialText = context.trialEndsAt == null
+    final reasonText = switch (context.blockReason) {
+      TenantBlockReason.suspended => 'empresa suspendida',
+      TenantBlockReason.trialExpired => 'trial vencido',
+      TenantBlockReason.subscriptionExpired =>
+        'suscripcion vencida o pendiente',
+    };
+    final dueText = context.trialEndsAt == null
         ? 'N/D'
         : _formatDate(context.trialEndsAt!);
     final emailText = context.requesterEmail.isEmpty
         ? 'N/D'
         : context.requesterEmail;
-    final message =
-        'Hola ${context.systemAdminName ?? 'Administrador'}, necesito asistencia '
-        'para reactivar el acceso.\n'
-        'Empresa: ${context.tenantName}\n'
-        'Tenant ID: ${context.tenantId}\n'
-        'Estado actual: ${context.tenantStatus}\n'
-        'Plan: ${context.tenantPlan}\n'
-        'Vencimiento trial: $trialText\n'
-        'Motivo: $reasonText\n'
-        'Solicitante: ${context.requesterName}\n'
-        'UID: ${context.requesterUid}\n'
-        'Email: $emailText';
+    final normalizedActivationReason = (activationReason ?? '').trim();
+    final includeActivationDetails =
+        requestedPlan != null || normalizedActivationReason.isNotEmpty;
+    final customRequestedUntil = requestedCustomEndsAt == null
+        ? 'N/D'
+        : _formatDate(requestedCustomEndsAt);
+    final messageBuffer = StringBuffer(
+      'Hola ${context.systemAdminName ?? 'Administrador'}, necesito asistencia '
+      'para reactivar el acceso.\n'
+      'Empresa: ${context.tenantName}\n'
+      'Tenant ID: ${context.tenantId}\n'
+      'Estado actual: ${context.tenantStatus}\n'
+      'Plan: ${context.tenantPlan}\n'
+      'Vencimiento: $dueText\n'
+      'Motivo: $reasonText\n'
+      'Solicitante: ${context.requesterName}\n'
+      'UID: ${context.requesterUid}\n'
+      'Email: $emailText',
+    );
+    if (includeActivationDetails) {
+      messageBuffer
+        ..write('\nSolicitud de activacion: SI')
+        ..write('\nPlan solicitado: ');
+      if (requestedPlan == null) {
+        messageBuffer.write('N/D');
+      } else {
+        messageBuffer.write(_tenantPlanLabel(requestedPlan));
+      }
+      messageBuffer
+        ..write('\nMotivo de activacion: ')
+        ..write(
+          normalizedActivationReason.isEmpty
+              ? 'N/D'
+              : normalizedActivationReason,
+        );
+      if (requestedPlan == TenantPlan.custom) {
+        messageBuffer
+          ..write('\nVigencia custom solicitada: ')
+          ..write(customRequestedUntil);
+      }
+    }
+    final message = messageBuffer.toString();
 
     return Uri.parse(
       'https://wa.me/$adminDigits?text=${Uri.encodeComponent(message)}',
@@ -560,6 +623,64 @@ class SessionController extends ChangeNotifier {
       return error.message;
     }
     return 'Error inesperado al cargar sesión.';
+  }
+
+  Future<void> requestTenantActivation({
+    required TenantBlockingSupportContext supportContext,
+    required TenantPlan requestedPlan,
+    required String reason,
+    DateTime? customEndsAt,
+  }) async {
+    final user = currentUser;
+    if (user == null) {
+      throw StateError('No hay sesion autenticada.');
+    }
+    if (!supportContext.canRequestActivation) {
+      throw StateError('No tienes permisos para solicitar activacion.');
+    }
+    if (requestedPlan == TenantPlan.trial) {
+      throw StateError('No se puede solicitar activacion al plan trial.');
+    }
+    final normalizedReason = reason.trim();
+    if (normalizedReason.isEmpty) {
+      throw StateError('Debes indicar el motivo de activacion.');
+    }
+    if (requestedPlan == TenantPlan.custom) {
+      if (customEndsAt == null || !customEndsAt.isAfter(DateTime.now())) {
+        throw StateError('Para plan custom debes elegir una vigencia futura.');
+      }
+    }
+
+    final pendingSnapshot = await _firestore
+        .collection('tenant_activation_requests')
+        .where('requesterUid', isEqualTo: user.uid)
+        .get();
+    final hasPendingForTenant = pendingSnapshot.docs.any((doc) {
+      final data = doc.data();
+      final tenantId = (data['tenantId'] as String? ?? '').trim();
+      final status = (data['status'] as String? ?? '').trim().toLowerCase();
+      return tenantId == supportContext.tenantId && status == 'pending';
+    });
+    if (hasPendingForTenant) {
+      throw StateError('Ya tienes una solicitud de activacion pendiente.');
+    }
+
+    final now = Timestamp.now();
+    await _firestore.collection('tenant_activation_requests').add({
+      'tenantId': supportContext.tenantId,
+      'tenantName': supportContext.tenantName,
+      'requesterUid': user.uid,
+      'requesterName': supportContext.requesterName,
+      'requesterEmail': supportContext.requesterEmail,
+      'requestedPlan': tenantPlanToString(requestedPlan),
+      'requestedCustomEndsAt': requestedPlan == TenantPlan.custom
+          ? Timestamp.fromDate(customEndsAt!)
+          : null,
+      'reason': normalizedReason,
+      'status': 'pending',
+      'createdAt': now,
+      'updatedAt': now,
+    });
   }
 
   Future<void> signInWithEmailPassword({
@@ -1222,7 +1343,7 @@ class _ModuleHomeScreen extends StatelessWidget {
   }
 }
 
-class _TenantBlockedSupportScreen extends StatelessWidget {
+class _TenantBlockedSupportScreen extends StatefulWidget {
   const _TenantBlockedSupportScreen({
     required this.sessionController,
     required this.supportContext,
@@ -1231,21 +1352,45 @@ class _TenantBlockedSupportScreen extends StatelessWidget {
   final SessionController sessionController;
   final TenantBlockingSupportContext supportContext;
 
+  @override
+  State<_TenantBlockedSupportScreen> createState() =>
+      _TenantBlockedSupportScreenState();
+}
+
+class _TenantBlockedSupportScreenState
+    extends State<_TenantBlockedSupportScreen> {
+  final TextEditingController _reasonController = TextEditingController();
+  TenantPlan _requestedPlan = TenantPlan.basic;
+  DateTime? _customEndsAt;
+  bool _submittingRequest = false;
+
+  TenantBlockingSupportContext get supportContext => widget.supportContext;
+  SessionController get sessionController => widget.sessionController;
+
   String get _title {
-    return supportContext.blockReason == TenantBlockReason.suspended
-        ? 'Empresa suspendida'
-        : 'Trial vencido';
+    switch (supportContext.blockReason) {
+      case TenantBlockReason.suspended:
+        return 'Empresa suspendida';
+      case TenantBlockReason.trialExpired:
+        return 'Trial vencido';
+      case TenantBlockReason.subscriptionExpired:
+        return 'Suscripcion vencida';
+    }
   }
 
   String get _message {
     if (supportContext.blockReason == TenantBlockReason.suspended) {
       return 'La empresa fue suspendida. Solicita reactivacion al administrador del sistema.';
     }
-    final trialDate = supportContext.trialEndsAt == null
+    final dueDate = supportContext.trialEndsAt == null
         ? 'N/D'
         : _formatDate(supportContext.trialEndsAt!);
-    return 'El periodo de prueba finalizo el $trialDate. '
-        'Solicita renovacion al administrador del sistema.';
+    if (supportContext.blockReason == TenantBlockReason.trialExpired) {
+      return 'El periodo de prueba finalizo el $dueDate. '
+          'Solicita activacion del plan contratado.';
+    }
+    return 'La suscripcion se encuentra vencida o pendiente de aprobacion. '
+        'Vencimiento: $dueDate.';
   }
 
   String _formatDate(DateTime value) {
@@ -1254,6 +1399,23 @@ class _TenantBlockedSupportScreen extends StatelessWidget {
     final month = local.month.toString().padLeft(2, '0');
     final year = local.year.toString();
     return '$day/$month/$year';
+  }
+
+  Future<void> _pickCustomEndsAt() async {
+    final now = DateTime.now();
+    final initial = _customEndsAt ?? now.add(const Duration(days: 30));
+    final picked = await showDatePicker(
+      context: context,
+      firstDate: now,
+      lastDate: DateTime(now.year + 5),
+      initialDate: initial,
+    );
+    if (picked == null || !mounted) {
+      return;
+    }
+    setState(() {
+      _customEndsAt = DateTime(picked.year, picked.month, picked.day, 23, 59);
+    });
   }
 
   Future<void> _openWhatsApp(BuildContext context) async {
@@ -1275,6 +1437,88 @@ class _TenantBlockedSupportScreen extends StatelessWidget {
           content: Text('No se pudo abrir WhatsApp en este dispositivo.'),
         ),
       );
+    }
+  }
+
+  Future<void> _submitActivationRequest() async {
+    final reason = _reasonController.text.trim();
+    if (reason.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Debes indicar el motivo de activacion.')),
+      );
+      return;
+    }
+    if (_requestedPlan == TenantPlan.custom &&
+        (_customEndsAt == null || !_customEndsAt!.isAfter(DateTime.now()))) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Debes seleccionar una vigencia futura para custom.'),
+        ),
+      );
+      return;
+    }
+    setState(() {
+      _submittingRequest = true;
+    });
+    final requestedPlan = _requestedPlan;
+    final requestedCustomEndsAt = requestedPlan == TenantPlan.custom
+        ? _customEndsAt
+        : null;
+    try {
+      await sessionController.requestTenantActivation(
+        supportContext: supportContext,
+        requestedPlan: requestedPlan,
+        customEndsAt: requestedCustomEndsAt,
+        reason: reason,
+      );
+      if (!mounted) {
+        return;
+      }
+      final uri = sessionController.buildTenantSupportWhatsappUri(
+        requestedPlan: requestedPlan,
+        activationReason: reason,
+        requestedCustomEndsAt: requestedCustomEndsAt,
+      );
+      _reasonController.clear();
+      setState(() {
+        _requestedPlan = TenantPlan.basic;
+        _customEndsAt = null;
+      });
+      if (uri == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Solicitud enviada para aprobacion.')),
+        );
+      } else {
+        final launched = await launchUrl(
+          uri,
+          mode: LaunchMode.externalApplication,
+        );
+        if (!mounted) {
+          return;
+        }
+        final message = launched
+            ? 'Solicitud enviada y WhatsApp preparado para notificar al administrador.'
+            : 'Solicitud enviada. No se pudo abrir WhatsApp en este dispositivo.';
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(message)));
+      }
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      final message = error is StateError
+          ? error.message
+          : 'No se pudo enviar la solicitud: $error';
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(message)));
+    } finally {
+      if (mounted) {
+        setState(() {
+          _submittingRequest = false;
+        });
+      }
     }
   }
 
@@ -1304,8 +1548,14 @@ class _TenantBlockedSupportScreen extends StatelessWidget {
   }
 
   @override
+  void dispose() {
+    _reasonController.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final trialEndsAt = supportContext.trialEndsAt == null
+    final dueAt = supportContext.trialEndsAt == null
         ? 'N/D'
         : _formatDate(supportContext.trialEndsAt!);
     final adminName = (supportContext.systemAdminName ?? '').trim();
@@ -1362,11 +1612,7 @@ class _TenantBlockedSupportScreen extends StatelessWidget {
                         label: 'Plan',
                         value: supportContext.tenantPlan,
                       ),
-                      _detailRow(
-                        context,
-                        label: 'Trial vence',
-                        value: trialEndsAt,
-                      ),
+                      _detailRow(context, label: 'Vence', value: dueAt),
                       const Divider(height: 24),
                       _detailRow(
                         context,
@@ -1401,6 +1647,93 @@ class _TenantBlockedSupportScreen extends StatelessWidget {
                           ),
                         ],
                       ),
+                      if (supportContext.canRequestActivation) ...[
+                        const Divider(height: 28),
+                        Text(
+                          'Solicitar activacion',
+                          style: Theme.of(context).textTheme.titleMedium,
+                        ),
+                        const SizedBox(height: 10),
+                        DropdownButtonFormField<TenantPlan>(
+                          initialValue: _requestedPlan,
+                          decoration: const InputDecoration(
+                            labelText: 'Plan solicitado',
+                            border: OutlineInputBorder(),
+                          ),
+                          items: const [
+                            DropdownMenuItem(
+                              value: TenantPlan.basic,
+                              child: Text('basic (mensual)'),
+                            ),
+                            DropdownMenuItem(
+                              value: TenantPlan.pro,
+                              child: Text('pro (anual)'),
+                            ),
+                            DropdownMenuItem(
+                              value: TenantPlan.custom,
+                              child: Text('custom (editable)'),
+                            ),
+                          ],
+                          onChanged: _submittingRequest
+                              ? null
+                              : (value) {
+                                  if (value == null) {
+                                    return;
+                                  }
+                                  setState(() {
+                                    _requestedPlan = value;
+                                    if (value != TenantPlan.custom) {
+                                      _customEndsAt = null;
+                                    }
+                                  });
+                                },
+                        ),
+                        if (_requestedPlan == TenantPlan.custom) ...[
+                          const SizedBox(height: 10),
+                          OutlinedButton.icon(
+                            onPressed: _submittingRequest
+                                ? null
+                                : _pickCustomEndsAt,
+                            icon: const Icon(Icons.event_outlined),
+                            label: Text(
+                              _customEndsAt == null
+                                  ? 'Elegir vigencia custom'
+                                  : 'Vence: ${_formatDate(_customEndsAt!)}',
+                            ),
+                          ),
+                        ],
+                        const SizedBox(height: 10),
+                        TextField(
+                          controller: _reasonController,
+                          maxLines: 3,
+                          maxLength: 280,
+                          enabled: !_submittingRequest,
+                          decoration: const InputDecoration(
+                            labelText: 'Motivo de activacion',
+                            border: OutlineInputBorder(),
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+                        FilledButton.icon(
+                          onPressed: _submittingRequest
+                              ? null
+                              : _submitActivationRequest,
+                          icon: _submittingRequest
+                              ? const SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : const Icon(Icons.send_outlined),
+                          label: Text(
+                            _submittingRequest
+                                ? 'Enviando...'
+                                : 'Solicitar activacion',
+                          ),
+                        ),
+                      ],
                     ],
                   ),
                 ),

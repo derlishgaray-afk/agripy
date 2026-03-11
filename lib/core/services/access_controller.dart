@@ -22,7 +22,7 @@ DateTime? _parseDateTime(dynamic value) {
   return null;
 }
 
-enum TenantBlockReason { suspended, trialExpired }
+enum TenantBlockReason { suspended, trialExpired, subscriptionExpired }
 
 class TenantBlockedException implements Exception {
   const TenantBlockedException({
@@ -47,6 +47,8 @@ class TenantBlockedException implements Exception {
         return 'La empresa esta suspendida temporalmente.';
       case TenantBlockReason.trialExpired:
         return 'El periodo de prueba de la empresa ya vencio.';
+      case TenantBlockReason.subscriptionExpired:
+        return 'La suscripcion de la empresa ya vencio o esta pendiente de aprobacion.';
     }
   }
 
@@ -149,6 +151,11 @@ class AccessController {
         : tenantId;
     final planRaw = (tenantData['plan'] as String? ?? '').trim().toLowerCase();
     final trialEndsAt = _parseDateTime(tenantData['trialEndsAt']);
+    final accessEndsAt = _parseDateTime(tenantData['accessEndsAt']);
+    final subscriptionStatusRaw =
+        (tenantData['subscriptionStatus'] as String? ?? 'active')
+            .trim()
+            .toLowerCase();
 
     if (tenantStatus != 'active') {
       throw TenantBlockedException(
@@ -172,6 +179,22 @@ class AccessController {
         tenantPlan: planRaw,
         trialEndsAt: trialEndsAt,
       );
+    }
+
+    if (planRaw != 'trial') {
+      final pendingApproval = subscriptionStatusRaw == 'pending_approval';
+      final expiredByDate =
+          accessEndsAt != null && accessEndsAt.isBefore(DateTime.now());
+      if (pendingApproval || expiredByDate) {
+        throw TenantBlockedException(
+          reason: TenantBlockReason.subscriptionExpired,
+          tenantId: tenantId,
+          tenantName: tenantName,
+          tenantStatus: tenantStatus,
+          tenantPlan: planRaw,
+          trialEndsAt: accessEndsAt,
+        );
+      }
     }
 
     return tenantData;

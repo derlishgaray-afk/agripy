@@ -27,6 +27,36 @@ class _TenantFormScreenState extends State<TenantFormScreen> {
 
   TenantModel? get _editingTenant => widget.args.tenant;
 
+  DateTime _addMonths(DateTime value, int months) {
+    final year = value.year + ((value.month - 1 + months) ~/ 12);
+    final month = ((value.month - 1 + months) % 12) + 1;
+    final endOfMonth = DateTime(year, month + 1, 0).day;
+    final safeDay = value.day <= endOfMonth ? value.day : endOfMonth;
+    return DateTime(
+      year,
+      month,
+      safeDay,
+      value.hour,
+      value.minute,
+      value.second,
+      value.millisecond,
+      value.microsecond,
+    );
+  }
+
+  DateTime _defaultAccessEndsAt(TenantPlan plan, DateTime now) {
+    switch (plan) {
+      case TenantPlan.basic:
+        return _addMonths(now, 1);
+      case TenantPlan.pro:
+        return _addMonths(now, 12);
+      case TenantPlan.custom:
+        return _addMonths(now, 1);
+      case TenantPlan.trial:
+        return now.add(const Duration(days: 7));
+    }
+  }
+
   @override
   void initState() {
     super.initState();
@@ -53,6 +83,19 @@ class _TenantFormScreenState extends State<TenantFormScreen> {
     });
 
     try {
+      final now = DateTime.now();
+      DateTime? trialEndsAt = _editingTenant?.trialEndsAt;
+      DateTime? accessEndsAt = _editingTenant?.accessEndsAt;
+      final subscriptionStatus =
+          _editingTenant?.subscriptionStatus ?? TenantSubscriptionStatus.active;
+      if (_plan == TenantPlan.trial) {
+        trialEndsAt ??= now.add(const Duration(days: 7));
+        accessEndsAt = null;
+      } else {
+        trialEndsAt = null;
+        accessEndsAt ??= _defaultAccessEndsAt(_plan, now);
+      }
+
       final tenant = TenantModel(
         id: _editingTenant?.id,
         name: _nameController.text.trim(),
@@ -61,6 +104,9 @@ class _TenantFormScreenState extends State<TenantFormScreen> {
         modules: _selectedModules.toList(growable: false),
         createdAt: _editingTenant?.createdAt ?? DateTime.now(),
         createdBy: _editingTenant?.createdBy ?? widget.args.actorUid,
+        trialEndsAt: trialEndsAt,
+        accessEndsAt: accessEndsAt,
+        subscriptionStatus: subscriptionStatus,
       );
 
       if (_editingTenant == null) {

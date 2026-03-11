@@ -776,6 +776,9 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
   String _orderStateLabel(ApplicationOrder? order) {
     final key = _orderStateKey(order);
     if (key == 'completed') {
+      if (_pendingTankCount(order) > 0.000001) {
+        return 'Finalizado';
+      }
       return 'Completado';
     }
     if (key == 'annulled') {
@@ -1067,6 +1070,8 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
     final planned = _plannedTankCount(order);
     final applied = _appliedTankCount(order);
     final pending = _pendingTankCount(order);
+    final reason = order?.execution.operatorNotes?.trim() ?? '';
+    final reasonText = reason.isEmpty ? '' : ' | Motivo: $reason';
     final hasProgress = planned > 0;
     final progressText = hasProgress
         ? ' | Tanques ${applied.toStringAsFixed(2)}/${planned.toStringAsFixed(2)}'
@@ -1074,10 +1079,15 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
         : '';
     if (key == 'completed') {
       final doneAt = order?.execution.doneAt;
+      final isFinalizedWithPending = pending > 0.000001;
       if (doneAt == null) {
-        return 'Actualizacion: Completado$progressText';
+        return isFinalizedWithPending
+            ? 'Actualizacion: Finalizado con pendiente$progressText$reasonText'
+            : 'Actualizacion: Completado$progressText';
       }
-      return 'Actualizacion: Completado el ${_formatDateTime(doneAt)}$progressText';
+      return isFinalizedWithPending
+          ? 'Actualizacion: Finalizado con pendiente el ${_formatDateTime(doneAt)}$progressText$reasonText'
+          : 'Actualizacion: Completado el ${_formatDateTime(doneAt)}$progressText';
     }
     if (key == 'annulled') {
       return 'Actualizacion: Anulado';
@@ -1472,9 +1482,25 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
             final appliedTankCount = _appliedTankCount(order);
             final pendingTankCount = _pendingTankCount(order);
             final isAnnulled = _orderStateKey(order) == 'annulled';
+            final isCompleted = _orderStateKey(order) == 'completed';
+            final hasRegisteredApplications =
+                order.execution.tankApplications.isNotEmpty ||
+                appliedTankCount > 0.000001 ||
+                order.execution.appliedVolumeLt > 0.000001;
+            final finalizationReason =
+                order.execution.operatorNotes?.trim() ?? '';
             final canManageOrder = _canEmit;
             final canRegisterProgress =
-                _canUpdateApplications && !isAnnulled && pendingTankCount > 0;
+                _canUpdateApplications &&
+                !isAnnulled &&
+                !isCompleted &&
+                pendingTankCount > 0;
+            final canFinalizeWithPending =
+                canManageOrder &&
+                !isAnnulled &&
+                !isCompleted &&
+                pendingTankCount > 0 &&
+                _appliedTankCount(order) > 0.000001;
             return AlertDialog(
               title: const Text('Actualizacion de emitido'),
               content: Column(
@@ -1497,6 +1523,10 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
                   Text(
                     'Tanques pendiente: ${pendingTankCount.toStringAsFixed(2)}',
                   ),
+                  if (isCompleted && finalizationReason.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    Text('Motivo de finalizacion: $finalizationReason'),
+                  ],
                 ],
               ),
               actions: [
@@ -1549,7 +1579,103 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
                         },
                   child: const Text('Registrar aplicacion'),
                 ),
-                if (canManageOrder && !isAnnulled)
+                if (canFinalizeWithPending)
+                  FilledButton.tonal(
+                    onPressed: submitting
+                        ? null
+                        : () async {
+                            final reasonController = TextEditingController();
+                            final reason = await showDialog<String>(
+                              context: context,
+                              builder: (context) {
+                                return StatefulBuilder(
+                                  builder: (context, setReasonState) {
+                                    final canSubmitReason = reasonController
+                                        .text
+                                        .trim()
+                                        .isNotEmpty;
+                                    return AlertDialog(
+                                      title: const Text('Finalizar emitido'),
+                                      content: Column(
+                                        mainAxisSize: MainAxisSize.min,
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          const Text(
+                                            'Esta accion finaliza el emitido con tanques pendientes. '
+                                            'No se anula y mantiene las aplicaciones registradas.',
+                                          ),
+                                          const SizedBox(height: 12),
+                                          TextField(
+                                            controller: reasonController,
+                                            maxLines: 3,
+                                            maxLength: 280,
+                                            decoration: const InputDecoration(
+                                              labelText:
+                                                  'Motivo de finalizacion',
+                                              border: OutlineInputBorder(),
+                                            ),
+                                            onChanged: (_) {
+                                              setReasonState(() {});
+                                            },
+                                          ),
+                                        ],
+                                      ),
+                                      actions: [
+                                        TextButton(
+                                          onPressed: () =>
+                                              Navigator.of(context).pop(),
+                                          child: const Text('Cancelar'),
+                                        ),
+                                        FilledButton(
+                                          onPressed: canSubmitReason
+                                              ? () => Navigator.of(context).pop(
+                                                  reasonController.text.trim(),
+                                                )
+                                              : null,
+                                          child: const Text('Finalizar'),
+                                        ),
+                                      ],
+                                    );
+                                  },
+                                );
+                              },
+                            );
+                            reasonController.dispose();
+                            if (reason == null || reason.trim().isEmpty) {
+                              return;
+                            }
+                            setDialogState(() {
+                              submitting = true;
+                            });
+                            try {
+                              await _repo.finalizeOrderWithPending(
+                                orderId: orderId,
+                                reason: reason,
+                              );
+                              if (!mounted || !dialogContext.mounted) {
+                                return;
+                              }
+                              Navigator.of(dialogContext).pop();
+                              _showSnack(
+                                'Emitido finalizado con tanque pendiente. '
+                                'Las aplicaciones registradas se conservaron.',
+                              );
+                            } catch (error) {
+                              if (!mounted) {
+                                return;
+                              }
+                              _showSnack(
+                                'No se pudo finalizar: ${_friendlyUpdateError(error)}',
+                              );
+                              setDialogState(() {
+                                submitting = false;
+                              });
+                            }
+                          },
+                    child: const Text('Finalizar'),
+                  ),
+                if (canManageOrder && !isAnnulled && !hasRegisteredApplications)
                   FilledButton(
                     onPressed: submitting
                         ? null
@@ -1602,7 +1728,7 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
                           },
                     child: const Text('Anular'),
                   )
-                else if (canManageOrder)
+                else if (canManageOrder && isAnnulled)
                   FilledButton(
                     onPressed: submitting
                         ? null
@@ -2290,7 +2416,10 @@ class _StatusChip extends StatelessWidget {
         normalized == 'annulled' ||
         normalized == 'anulado' ||
         normalized == 'cancelled';
-    final isCompleted = normalized == 'completed' || normalized == 'completado';
+    final isCompleted =
+        normalized == 'completed' ||
+        normalized == 'completado' ||
+        normalized == 'finalizado';
     final isPublished = normalized == 'published' || normalized == 'publicado';
     final isEmitted = normalized == 'emitted' || normalized == 'emitido';
     final backgroundColor = isAnnulled
@@ -2316,7 +2445,7 @@ class _StatusChip extends StatelessWidget {
         isAnnulled
             ? 'Anulado'
             : isCompleted
-            ? 'Completado'
+            ? (normalized == 'finalizado' ? 'Finalizado' : 'Completado')
             : isEmitted
             ? 'Emitido'
             : isPublished

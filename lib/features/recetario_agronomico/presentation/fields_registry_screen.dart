@@ -18,6 +18,8 @@ class FieldsRegistryScreen extends StatefulWidget {
 
 class _FieldsRegistryScreenState extends State<FieldsRegistryScreen> {
   late final RecetarioCatalogRepo _repo;
+  final TextEditingController _searchController = TextEditingController();
+  String _searchQuery = '';
 
   bool get _canEdit => widget.session.access.canEditRecetario;
 
@@ -218,6 +220,12 @@ class _FieldsRegistryScreenState extends State<FieldsRegistryScreen> {
     }
   }
 
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
   void _showSnack(String message) {
     if (!mounted) {
       return;
@@ -236,6 +244,22 @@ class _FieldsRegistryScreenState extends State<FieldsRegistryScreen> {
       total += lot.areaHa;
     }
     return total;
+  }
+
+  bool _matchesSearch(FieldRegistryItem field, String query) {
+    if (query.isEmpty) {
+      return true;
+    }
+    final normalizedQuery = query.toLowerCase();
+    if (field.name.toLowerCase().contains(normalizedQuery)) {
+      return true;
+    }
+    for (final lot in field.lots) {
+      if (lot.name.toLowerCase().contains(normalizedQuery)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   @override
@@ -258,106 +282,163 @@ class _FieldsRegistryScreenState extends State<FieldsRegistryScreen> {
           if (!snapshot.hasData) {
             return const Center(child: CircularProgressIndicator());
           }
-          final fields = snapshot.data!;
-          if (fields.isEmpty) {
+          final allFields = snapshot.data!;
+          if (allFields.isEmpty) {
             return const Center(child: Text('Sin campos registrados.'));
           }
+          final query = _searchQuery.trim();
+          final fields = allFields
+              .where((field) => _matchesSearch(field, query))
+              .toList(growable: false);
           return ResponsivePage(
-            child: ListView.separated(
-              padding: const EdgeInsets.only(bottom: 100),
-              itemCount: fields.length,
-              separatorBuilder: (context, index) => const SizedBox(height: 8),
-              itemBuilder: (context, index) {
-                final field = fields[index];
-                return Card(
-                  child: Padding(
-                    padding: const EdgeInsets.all(12),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          children: [
-                            Expanded(
-                              child: Text(
-                                field.name,
-                                style: Theme.of(context).textTheme.titleMedium,
-                              ),
-                            ),
-                            if (_canEdit)
-                              IconButton(
-                                tooltip: 'Editar campo',
-                                onPressed: () =>
-                                    _showFieldDialog(existing: field),
-                                icon: const Icon(Icons.edit_outlined),
-                              ),
-                            if (_canEdit)
-                              IconButton(
-                                tooltip: 'Eliminar campo',
-                                onPressed: () => _deleteField(field),
-                                icon: const Icon(Icons.delete_outline),
-                              ),
-                          ],
-                        ),
-                        Text(
-                          'Superficie total: ${_fieldTotalArea(field).toStringAsFixed(2)} ha',
-                        ),
-                        const SizedBox(height: 10),
-                        Text(
-                          'Lotes',
-                          style: Theme.of(context).textTheme.titleSmall,
-                        ),
-                        const SizedBox(height: 6),
-                        if (field.lots.isEmpty)
-                          const Text('Sin lotes cargados.')
-                        else
-                          ...field.lots.asMap().entries.map((entry) {
-                            final lot = entry.value;
-                            return Row(
-                              children: [
-                                Expanded(
-                                  child: Text(
-                                    '- ${lot.name}: ${lot.areaHa.toStringAsFixed(2)} ha',
-                                  ),
-                                ),
-                                if (_canEdit)
-                                  IconButton(
-                                    icon: const Icon(
-                                      Icons.edit_outlined,
-                                      size: 18,
-                                    ),
-                                    tooltip: 'Editar lote',
-                                    onPressed: () => _showLotDialog(
-                                      field,
-                                      existing: lot,
-                                      lotIndex: entry.key,
-                                    ),
-                                  ),
-                                if (_canEdit)
-                                  IconButton(
-                                    icon: const Icon(
-                                      Icons.delete_outline,
-                                      size: 18,
-                                    ),
-                                    tooltip: 'Eliminar lote',
-                                    onPressed: () =>
-                                        _deleteLot(field, entry.key),
-                                  ),
-                              ],
-                            );
-                          }),
-                        if (_canEdit) ...[
-                          const SizedBox(height: 8),
-                          OutlinedButton.icon(
-                            onPressed: () => _showLotDialog(field),
-                            icon: const Icon(Icons.add),
-                            label: const Text('Agregar lote'),
+            child: Column(
+              children: [
+                TextField(
+                  controller: _searchController,
+                  decoration: InputDecoration(
+                    hintText: 'Buscar campo o lote',
+                    prefixIcon: const Icon(Icons.search),
+                    suffixIcon: query.isEmpty
+                        ? null
+                        : IconButton(
+                            tooltip: 'Limpiar búsqueda',
+                            onPressed: () {
+                              _searchController.clear();
+                              setState(() {
+                                _searchQuery = '';
+                              });
+                            },
+                            icon: const Icon(Icons.close),
                           ),
-                        ],
-                      ],
-                    ),
+                    border: const OutlineInputBorder(),
                   ),
-                );
-              },
+                  onChanged: (value) {
+                    setState(() {
+                      _searchQuery = value;
+                    });
+                  },
+                ),
+                const SizedBox(height: 8),
+                Expanded(
+                  child: fields.isEmpty
+                      ? Center(
+                          child: Text(
+                            'No se encontraron campos para "$query".',
+                          ),
+                        )
+                      : ListView.separated(
+                          padding: const EdgeInsets.only(bottom: 100),
+                          itemCount: fields.length,
+                          separatorBuilder: (context, index) =>
+                              const SizedBox(height: 8),
+                          itemBuilder: (context, index) {
+                            final field = fields[index];
+                            return Card(
+                              child: Padding(
+                                padding: const EdgeInsets.all(12),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Row(
+                                      children: [
+                                        Expanded(
+                                          child: Text(
+                                            field.name,
+                                            style: Theme.of(
+                                              context,
+                                            ).textTheme.titleMedium,
+                                          ),
+                                        ),
+                                        if (_canEdit)
+                                          IconButton(
+                                            tooltip: 'Editar campo',
+                                            onPressed: () => _showFieldDialog(
+                                              existing: field,
+                                            ),
+                                            icon: const Icon(
+                                              Icons.edit_outlined,
+                                            ),
+                                          ),
+                                        if (_canEdit)
+                                          IconButton(
+                                            tooltip: 'Eliminar campo',
+                                            onPressed: () =>
+                                                _deleteField(field),
+                                            icon: const Icon(
+                                              Icons.delete_outline,
+                                            ),
+                                          ),
+                                      ],
+                                    ),
+                                    Text(
+                                      'Superficie total: ${_fieldTotalArea(field).toStringAsFixed(2)} ha',
+                                    ),
+                                    const SizedBox(height: 10),
+                                    Text(
+                                      'Lotes',
+                                      style: Theme.of(
+                                        context,
+                                      ).textTheme.titleSmall,
+                                    ),
+                                    const SizedBox(height: 6),
+                                    if (field.lots.isEmpty)
+                                      const Text('Sin lotes cargados.')
+                                    else
+                                      ...field.lots.asMap().entries.map((
+                                        entry,
+                                      ) {
+                                        final lot = entry.value;
+                                        return Row(
+                                          children: [
+                                            Expanded(
+                                              child: Text(
+                                                '- ${lot.name}: ${lot.areaHa.toStringAsFixed(2)} ha',
+                                              ),
+                                            ),
+                                            if (_canEdit)
+                                              IconButton(
+                                                icon: const Icon(
+                                                  Icons.edit_outlined,
+                                                  size: 18,
+                                                ),
+                                                tooltip: 'Editar lote',
+                                                onPressed: () => _showLotDialog(
+                                                  field,
+                                                  existing: lot,
+                                                  lotIndex: entry.key,
+                                                ),
+                                              ),
+                                            if (_canEdit)
+                                              IconButton(
+                                                icon: const Icon(
+                                                  Icons.delete_outline,
+                                                  size: 18,
+                                                ),
+                                                tooltip: 'Eliminar lote',
+                                                onPressed: () => _deleteLot(
+                                                  field,
+                                                  entry.key,
+                                                ),
+                                              ),
+                                          ],
+                                        );
+                                      }),
+                                    if (_canEdit) ...[
+                                      const SizedBox(height: 8),
+                                      OutlinedButton.icon(
+                                        onPressed: () => _showLotDialog(field),
+                                        icon: const Icon(Icons.add),
+                                        label: const Text('Agregar lote'),
+                                      ),
+                                    ],
+                                  ],
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                ),
+              ],
             ),
           );
         },

@@ -341,6 +341,13 @@ class RecetarioRepo {
           status == 'cancelled') {
         throw StateError('No se puede registrar avance en una orden anulada.');
       }
+      if (status == 'completed' ||
+          status == 'completado' ||
+          order.execution.done) {
+        throw StateError(
+          'No se puede registrar avance en una orden finalizada.',
+        );
+      }
 
       final plannedTankCount = order.tankCount;
       if (plannedTankCount <= 0 || order.tankCapacityLt <= 0) {
@@ -414,6 +421,100 @@ class RecetarioRepo {
       'execution.operatorUid': FieldValue.delete(),
       'updatedBy': currentUid,
       'updatedAt': Timestamp.now(),
+    });
+  }
+
+  Future<void> finalizeOrderWithPending({
+    required String orderId,
+    required String reason,
+  }) async {
+    _assertWriteAccess();
+    if (orderId.trim().isEmpty) {
+      throw StateError('Orden sin id.');
+    }
+    final normalizedReason = reason.trim();
+    if (normalizedReason.isEmpty) {
+      throw StateError('Debes indicar el motivo de finalizacion.');
+    }
+    final orderRef = TenantPath.applicationOrderRef(
+      _firestore,
+      tenantId,
+      orderId,
+    );
+    await _firestore.runTransaction((transaction) async {
+      final snapshot = await transaction.get(orderRef);
+      final data = snapshot.data();
+      if (data == null) {
+        throw StateError('Orden no encontrada.');
+      }
+      final order = ApplicationOrder.fromMap(data, id: snapshot.id);
+      final status = order.status.trim().toLowerCase();
+      if (status == 'annulled' ||
+          status == 'anulado' ||
+          status == 'cancelled') {
+        throw StateError('No se puede finalizar una orden anulada.');
+      }
+      if (status == 'completed' ||
+          status == 'completado' ||
+          order.execution.done) {
+        throw StateError('La orden ya se encuentra finalizada.');
+      }
+      if (order.tankCount <= 0) {
+        throw StateError('La orden no tiene tanques previstos validos.');
+      }
+
+      var appliedEquivalent = order.execution.appliedTankCount;
+      if (appliedEquivalent <= 0 &&
+          order.execution.appliedVolumeLt > 0 &&
+          order.tankCapacityLt > 0) {
+        appliedEquivalent =
+            order.execution.appliedVolumeLt / order.tankCapacityLt;
+      }
+      if (appliedEquivalent <= 0 &&
+          order.execution.tankApplications.isNotEmpty) {
+        var sumEquivalent = 0.0;
+        for (final entry in order.execution.tankApplications) {
+          if (entry.appliedTankEquivalent > 0) {
+            sumEquivalent += entry.appliedTankEquivalent;
+          } else if (entry.appliedVolumeLt > 0 && order.tankCapacityLt > 0) {
+            sumEquivalent += entry.appliedVolumeLt / order.tankCapacityLt;
+          } else if (entry.tankCapacityLt > 0 && order.tankCapacityLt > 0) {
+            sumEquivalent +=
+                entry.tankCount * (entry.tankCapacityLt / order.tankCapacityLt);
+          } else {
+            sumEquivalent += entry.tankCount;
+          }
+        }
+        appliedEquivalent = sumEquivalent;
+      }
+      if (appliedEquivalent <= 0.000001) {
+        throw StateError(
+          'No hay aplicaciones registradas para finalizar con pendiente.',
+        );
+      }
+
+      final plannedTankCount = order.tankCount;
+      final boundedApplied = appliedEquivalent
+          .clamp(0, plannedTankCount)
+          .toDouble();
+      final pending = plannedTankCount - boundedApplied;
+      if (pending <= 0.000001) {
+        throw StateError('La orden ya no tiene tanques pendientes.');
+      }
+
+      transaction.update(orderRef, {
+        'status': 'completed',
+        'execution.done': true,
+        'execution.doneAt': Timestamp.now(),
+        'execution.operatorUid':
+            (order.execution.operatorUid ?? '').trim().isNotEmpty
+            ? order.execution.operatorUid
+            : currentUid,
+        'execution.operatorNotes': normalizedReason,
+        'execution.appliedTankCount': boundedApplied,
+        'updatedBy': currentUid,
+        'updatedAt': Timestamp.now(),
+      });
     });
   }
 

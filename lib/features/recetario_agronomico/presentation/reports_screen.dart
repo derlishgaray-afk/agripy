@@ -1348,6 +1348,7 @@ class _PdfPreviewPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
     final previewRows = rows.take(40).toList(growable: false);
     var currentOrderCode = '';
     var codeGroupIndex = -1;
@@ -1357,12 +1358,12 @@ class _PdfPreviewPanel extends StatelessWidget {
         currentOrderCode = row.orderCode;
         codeGroupIndex += 1;
       }
-      final isGreyGroup = codeGroupIndex.isOdd;
+      final rowColor = codeGroupIndex.isEven
+          ? colorScheme.surfaceContainer
+          : colorScheme.primaryContainer;
       tableDataRows.add(
         TableRow(
-          decoration: BoxDecoration(
-            color: isGreyGroup ? const Color(0x1F000000) : Colors.transparent,
-          ),
+          decoration: BoxDecoration(color: rowColor),
           children: [
             _TableCell(dateTimeFormat.format(row.issuedAt)),
             _TableCell('${row.fieldName}/${row.plotName}'),
@@ -1391,11 +1392,13 @@ class _PdfPreviewPanel extends StatelessWidget {
           SingleChildScrollView(
             scrollDirection: Axis.horizontal,
             child: Table(
-              border: TableBorder.all(color: Theme.of(context).dividerColor),
+              border: TableBorder.all(color: colorScheme.outlineVariant),
               defaultColumnWidth: const IntrinsicColumnWidth(),
               children: [
-                const TableRow(
-                  decoration: BoxDecoration(color: Color(0x11000000)),
+                TableRow(
+                  decoration: BoxDecoration(
+                    color: colorScheme.surfaceContainerHigh,
+                  ),
                   children: [
                     _TableCell('Fecha', header: true),
                     _TableCell('Campo/Lote', header: true),

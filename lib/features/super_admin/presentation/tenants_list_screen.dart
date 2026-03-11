@@ -112,13 +112,18 @@ class _TenantsListScreenState extends State<TenantsListScreen> {
                       final modules = tenant.modules
                           .map(AppModules.labelOf)
                           .join(', ');
+                      final accessEndsAt = tenant.accessEndsAt == null
+                          ? '-'
+                          : dateFormat.format(tenant.accessEndsAt!);
                       return Card(
                         child: ListTile(
                           onTap: () => _openDetail(tenant),
                           title: Text(tenant.name),
                           subtitle: Text(
                             'Plan: ${tenantPlanToString(tenant.plan)}\n'
+                            'Suscripcion: ${tenantSubscriptionStatusToString(tenant.subscriptionStatus)}\n'
                             'Estado: ${tenantStatusToString(tenant.status)}\n'
+                            'Acceso vence: $accessEndsAt\n'
                             'Modulos: ${modules.isEmpty ? '-' : modules}\n'
                             'Creado: ${dateFormat.format(tenant.createdAt)}',
                           ),

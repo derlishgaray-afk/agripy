@@ -109,9 +109,7 @@ class _ApplicationsReportScreenState extends State<ApplicationsReportScreen> {
     final records = <_ApplicationRecord>[];
     for (final order in orders) {
       for (final application in order.execution.tankApplications) {
-        records.add(
-          _ApplicationRecord(order: order, application: application),
-        );
+        records.add(_ApplicationRecord(order: order, application: application));
       }
     }
     records.sort(
@@ -238,35 +236,42 @@ class _ApplicationsReportScreenState extends State<ApplicationsReportScreen> {
     required String? selectedField,
     required Set<String> selectedPlots,
   }) {
-    return records.where((item) {
-      if (!_withinPeriod(item.application.appliedAt)) {
-        return false;
-      }
-      final farmName = _cleanLabel(item.order.farmName, fallback: 'Sin campo');
-      if (selectedField != null && selectedField != farmName) {
-        return false;
-      }
-      if (!_matchesSelectedPlots(item, selectedPlots)) {
-        return false;
-      }
-      return true;
-    }).toList(growable: false);
+    return records
+        .where((item) {
+          if (!_withinPeriod(item.application.appliedAt)) {
+            return false;
+          }
+          final farmName = _cleanLabel(
+            item.order.farmName,
+            fallback: 'Sin campo',
+          );
+          if (selectedField != null && selectedField != farmName) {
+            return false;
+          }
+          if (!_matchesSelectedPlots(item, selectedPlots)) {
+            return false;
+          }
+          return true;
+        })
+        .toList(growable: false);
   }
 
   List<_ApplicationRecord> _applyFinalFilters(
     List<_ApplicationRecord> records, {
     required String? selectedOperator,
   }) {
-    return records.where((item) {
-      final operator = _cleanLabel(
-        item.order.operatorName,
-        fallback: 'Sin operador',
-      );
-      if (selectedOperator != null && selectedOperator != operator) {
-        return false;
-      }
-      return true;
-    }).toList(growable: false);
+    return records
+        .where((item) {
+          final operator = _cleanLabel(
+            item.order.operatorName,
+            fallback: 'Sin operador',
+          );
+          if (selectedOperator != null && selectedOperator != operator) {
+            return false;
+          }
+          return true;
+        })
+        .toList(growable: false);
   }
 
   List<String> _collectFieldNames(List<_ApplicationRecord> records) {
@@ -304,7 +309,9 @@ class _ApplicationsReportScreenState extends State<ApplicationsReportScreen> {
   List<String> _collectOperatorNames(List<_ApplicationRecord> records) {
     final result = <String>{};
     for (final item in records) {
-      result.add(_cleanLabel(item.order.operatorName, fallback: 'Sin operador'));
+      result.add(
+        _cleanLabel(item.order.operatorName, fallback: 'Sin operador'),
+      );
     }
     final sorted = result.toList(growable: false)
       ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
@@ -436,11 +443,7 @@ class _ApplicationsReportScreenState extends State<ApplicationsReportScreen> {
     });
   }
 
-  Widget _buildPeriodChip(
-    String label,
-    bool selected,
-    VoidCallback onTap,
-  ) {
+  Widget _buildPeriodChip(String label, bool selected, VoidCallback onTap) {
     return ChoiceChip(
       label: Text(label),
       selected: selected,
@@ -459,7 +462,8 @@ class _ApplicationsReportScreenState extends State<ApplicationsReportScreen> {
       return application.appliedVolumeLt / order.tankCapacityLt;
     }
     if (application.tankCapacityLt > 0 && order.tankCapacityLt > 0) {
-      return application.tankCount * (application.tankCapacityLt / order.tankCapacityLt);
+      return application.tankCount *
+          (application.tankCapacityLt / order.tankCapacityLt);
     }
     return application.tankCount;
   }
@@ -477,24 +481,29 @@ class _ApplicationsReportScreenState extends State<ApplicationsReportScreen> {
   }
 
   List<ApplicationReportPdfItem> _toPdfItems(List<_ApplicationRecord> records) {
-    return records.map((item) {
-      final order = item.order;
-      final application = item.application;
-      final plotName = _cleanLabel(
-        application.plotName,
-        fallback: _cleanLabel(order.plotName, fallback: 'Sin lote'),
-      );
-      return ApplicationReportPdfItem(
-        appliedAt: application.appliedAt,
-        orderCode: _cleanLabel(order.code, fallback: 'Sin codigo'),
-        fieldName: _cleanLabel(order.farmName, fallback: 'Sin campo'),
-        plotName: plotName,
-        operatorName: _cleanLabel(order.operatorName, fallback: 'Sin operador'),
-        tankCount: application.tankCount,
-        tankCapacityLt: application.tankCapacityLt,
-        appliedAreaHa: _appliedAreaHa(item),
-      );
-    }).toList(growable: false);
+    return records
+        .map((item) {
+          final order = item.order;
+          final application = item.application;
+          final plotName = _cleanLabel(
+            application.plotName,
+            fallback: _cleanLabel(order.plotName, fallback: 'Sin lote'),
+          );
+          return ApplicationReportPdfItem(
+            appliedAt: application.appliedAt,
+            orderCode: _cleanLabel(order.code, fallback: 'Sin codigo'),
+            fieldName: _cleanLabel(order.farmName, fallback: 'Sin campo'),
+            plotName: plotName,
+            operatorName: _cleanLabel(
+              order.operatorName,
+              fallback: 'Sin operador',
+            ),
+            tankCount: application.tankCount,
+            tankCapacityLt: application.tankCapacityLt,
+            appliedAreaHa: _appliedAreaHa(item),
+          );
+        })
+        .toList(growable: false);
   }
 
   Future<void> _exportPdf({
@@ -531,9 +540,9 @@ class _ApplicationsReportScreenState extends State<ApplicationsReportScreen> {
       if (!mounted) {
         return;
       }
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('PDF generado y compartido.')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('PDF generado y compartido.')),
+      );
     } catch (error) {
       if (!mounted) {
         return;
@@ -615,7 +624,9 @@ class _ApplicationsReportScreenState extends State<ApplicationsReportScreen> {
               child: Card(
                 child: Padding(
                   padding: const EdgeInsets.all(16),
-                  child: Text('No se pudo cargar el informe: ${snapshot.error}'),
+                  child: Text(
+                    'No se pudo cargar el informe: ${snapshot.error}',
+                  ),
                 ),
               ),
             );
@@ -832,7 +843,8 @@ class _ApplicationsReportScreenState extends State<ApplicationsReportScreen> {
                             child: TextButton.icon(
                               onPressed: () {
                                 setState(() {
-                                  _periodPreset = _ReportPeriodPreset.last30Days;
+                                  _periodPreset =
+                                      _ReportPeriodPreset.last30Days;
                                   _customFrom = null;
                                   _customTo = null;
                                   _selectedField = null;
@@ -929,15 +941,32 @@ class _ApplicationsReportScreenState extends State<ApplicationsReportScreen> {
                     ),
                   )
                 else
-                  ...records.map((item) {
+                  ...records.asMap().entries.map((entry) {
+                    final index = entry.key;
+                    final item = entry.value;
                     final order = item.order;
                     final application = item.application;
                     final appliedArea = _appliedAreaHa(item);
                     final plotName = _cleanLabel(
                       application.plotName,
-                      fallback: _cleanLabel(order.plotName, fallback: 'Sin lote'),
+                      fallback: _cleanLabel(
+                        order.plotName,
+                        fallback: 'Sin lote',
+                      ),
                     );
                     return Card(
+                      color: index.isEven
+                          ? Theme.of(context).colorScheme.surfaceContainer
+                          : Theme.of(context).colorScheme.primaryContainer,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(16),
+                        side: BorderSide(
+                          color: index.isEven
+                              ? Theme.of(context).colorScheme.outlineVariant
+                              : Theme.of(context).colorScheme.primary,
+                          width: index.isEven ? 0.6 : 1,
+                        ),
+                      ),
                       child: Padding(
                         padding: const EdgeInsets.all(16),
                         child: Column(

@@ -17,6 +17,8 @@ class InputsRegistryScreen extends StatefulWidget {
 
 class _InputsRegistryScreenState extends State<InputsRegistryScreen> {
   late final RecetarioCatalogRepo _repo;
+  final TextEditingController _searchController = TextEditingController();
+  String _searchQuery = '';
   static const List<String> _supplyTypeOptions = <String>[
     'herbicida',
     'fungicida',
@@ -325,6 +327,23 @@ class _InputsRegistryScreenState extends State<InputsRegistryScreen> {
   }
 
   @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  bool _matchesSearch(SupplyRegistryItem item, String query) {
+    if (query.isEmpty) {
+      return true;
+    }
+    final normalizedQuery = query.toLowerCase();
+    final activeIngredient = item.activeIngredient ?? '';
+    return item.commercialName.toLowerCase().contains(normalizedQuery) ||
+        activeIngredient.toLowerCase().contains(normalizedQuery) ||
+        item.type.toLowerCase().contains(normalizedQuery);
+  }
+
+  @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('Registro de Insumos')),
@@ -344,17 +363,59 @@ class _InputsRegistryScreenState extends State<InputsRegistryScreen> {
           if (!snapshot.hasData) {
             return const Center(child: CircularProgressIndicator());
           }
-          final supplies = snapshot.data!;
-          if (supplies.isEmpty) {
+          final allSupplies = snapshot.data!;
+          if (allSupplies.isEmpty) {
             return const Center(child: Text('Sin insumos registrados.'));
           }
+          final query = _searchQuery.trim();
+          final supplies = allSupplies
+              .where((item) => _matchesSearch(item, query))
+              .toList(growable: false);
+          final hasResults = supplies.isNotEmpty;
+          final listItemCount = hasResults ? supplies.length + 1 : 2;
           return ResponsivePage(
             child: ListView.separated(
               padding: const EdgeInsets.only(bottom: 100),
-              itemCount: supplies.length,
+              itemCount: listItemCount,
               separatorBuilder: (context, index) => const SizedBox(height: 8),
               itemBuilder: (context, index) {
-                final item = supplies[index];
+                if (index == 0) {
+                  return TextField(
+                    controller: _searchController,
+                    decoration: InputDecoration(
+                      hintText: 'Buscar por nombre, principio activo o tipo',
+                      prefixIcon: const Icon(Icons.search),
+                      suffixIcon: query.isEmpty
+                          ? null
+                          : IconButton(
+                              tooltip: 'Limpiar busqueda',
+                              onPressed: () {
+                                _searchController.clear();
+                                setState(() {
+                                  _searchQuery = '';
+                                });
+                              },
+                              icon: const Icon(Icons.close),
+                            ),
+                      border: const OutlineInputBorder(),
+                    ),
+                    onChanged: (value) {
+                      setState(() {
+                        _searchQuery = value;
+                      });
+                    },
+                  );
+                }
+                if (!hasResults) {
+                  return Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 20),
+                    child: Text(
+                      'No se encontraron insumos para "$query".',
+                      textAlign: TextAlign.center,
+                    ),
+                  );
+                }
+                final item = supplies[index - 1];
                 return Card(
                   child: ListTile(
                     title: Text(item.commercialName),

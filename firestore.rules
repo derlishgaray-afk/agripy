@@ -81,6 +81,17 @@ service cloud.firestore {
       return requesterTenantRole(tenantId) == 'admin';
     }
 
+    function requesterIsPrincipalTenantAdmin(tenantId) {
+      return isSignedIn() &&
+        (
+          isSelfWorkspaceOwner(tenantId) ||
+          (
+            requesterTenantUserExists(tenantId) &&
+            requesterTenantRole(tenantId) == 'admin'
+          )
+        );
+    }
+
     function tenantHasModule(tenantId, moduleKey) {
       return tenantExists(tenantId) &&
         moduleKey in get(/databases/$(database)/documents/tenants/$(tenantId)).data.modules;
@@ -294,6 +305,21 @@ service cloud.firestore {
           request.resource.data.createdAt == resource.data.createdAt) ||
         canWriteSelfTenantLinkFromExistingMembership(userId);
       allow delete: if isSuperAdmin();
+    }
+
+    match /tenant_activation_requests/{requestId} {
+      allow read: if isSuperAdmin() ||
+        (isSignedIn() && resource.data.requesterUid == uid());
+      allow create: if isSignedIn() &&
+        request.resource.data.tenantId is string &&
+        request.resource.data.requesterUid is string &&
+        request.resource.data.requesterUid == uid() &&
+        requesterIsPrincipalTenantAdmin(request.resource.data.tenantId) &&
+        request.resource.data.status == 'pending' &&
+        request.resource.data.requestedPlan in ['basic', 'pro', 'custom'] &&
+        request.resource.data.reason is string &&
+        request.resource.data.reason.size() > 0;
+      allow update, delete: if isSuperAdmin();
     }
 
     match /tenants/{tenantId} {

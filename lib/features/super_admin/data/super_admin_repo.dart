@@ -53,6 +53,26 @@ class SuperAdminRepo {
       _firestore.collection('tenants');
   CollectionReference<Map<String, dynamic>> get _tenantInvites =>
       _firestore.collection('tenant_user_invites');
+  CollectionReference<Map<String, dynamic>> get _activationRequests =>
+      _firestore.collection('tenant_activation_requests');
+
+  DateTime _addMonths(DateTime value, int months) {
+    final year = value.year + ((value.month - 1 + months) ~/ 12);
+    final month = ((value.month - 1 + months) % 12) + 1;
+    final day = value.day;
+    final endOfMonth = DateTime(year, month + 1, 0).day;
+    final safeDay = day <= endOfMonth ? day : endOfMonth;
+    return DateTime(
+      year,
+      month,
+      safeDay,
+      value.hour,
+      value.minute,
+      value.second,
+      value.millisecond,
+      value.microsecond,
+    );
+  }
 
   Future<SuperAdminProfile?> getSuperAdminProfile(String uid) async {
     final normalizedUid = uid.trim();
@@ -158,6 +178,216 @@ class SuperAdminRepo {
       throw StateError('Tenant sin id no puede actualizarse.');
     }
     await _tenants.doc(tenantId).update(tenant.toMap());
+  }
+
+  Stream<List<TenantActivationRequestModel>> watchActivationRequests({
+    String? tenantId,
+    TenantActivationRequestStatus? status,
+  }) {
+    Query<Map<String, dynamic>> query = _activationRequests;
+    final normalizedTenantId = (tenantId ?? '').trim();
+    if (normalizedTenantId.isNotEmpty) {
+      query = query.where('tenantId', isEqualTo: normalizedTenantId);
+    }
+    return query.snapshots().map((snapshot) {
+      var items = snapshot.docs
+          .map(
+            (doc) =>
+                TenantActivationRequestModel.fromMap(doc.data(), id: doc.id),
+          )
+          .toList(growable: true);
+      if (status != null) {
+        items = items
+            .where((item) => item.status == status)
+            .toList(growable: true);
+      }
+      items.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+      return List.unmodifiable(items);
+    });
+  }
+
+  Future<void> createTenantActivationRequest({
+    required String tenantId,
+    required String tenantName,
+    required String requesterUid,
+    required String requesterName,
+    required String requesterEmail,
+    required TenantPlan requestedPlan,
+    DateTime? requestedCustomEndsAt,
+    required String reason,
+  }) async {
+    final normalizedTenantId = tenantId.trim();
+    final normalizedRequesterUid = requesterUid.trim();
+    final normalizedReason = reason.trim();
+    if (normalizedTenantId.isEmpty) {
+      throw StateError('Tenant invalido para solicitud.');
+    }
+    if (normalizedRequesterUid.isEmpty) {
+      throw StateError('Usuario invalido para solicitud.');
+    }
+    if (requestedPlan == TenantPlan.trial) {
+      throw StateError('El plan trial no requiere solicitud de activacion.');
+    }
+    if (normalizedReason.isEmpty) {
+      throw StateError('Debes indicar el motivo de activacion.');
+    }
+    if (requestedPlan == TenantPlan.custom) {
+      if (requestedCustomEndsAt == null ||
+          !requestedCustomEndsAt.isAfter(DateTime.now())) {
+        throw StateError(
+          'Para plan custom debes definir una fecha de vigencia futura.',
+        );
+      }
+    }
+
+    final duplicateSnapshot = await _activationRequests
+        .where('requesterUid', isEqualTo: normalizedRequesterUid)
+        .get();
+    final hasPendingForTenant = duplicateSnapshot.docs.any((doc) {
+      final data = doc.data();
+      final tenantId = (data['tenantId'] as String? ?? '').trim();
+      final status = (data['status'] as String? ?? '').trim().toLowerCase();
+      return tenantId == normalizedTenantId && status == 'pending';
+    });
+    if (hasPendingForTenant) {
+      throw StateError('Ya existe una solicitud pendiente para este usuario.');
+    }
+
+    final now = DateTime.now();
+    final request = TenantActivationRequestModel(
+      tenantId: normalizedTenantId,
+      tenantName: tenantName.trim(),
+      requesterUid: normalizedRequesterUid,
+      requesterName: requesterName.trim(),
+      requesterEmail: requesterEmail.trim(),
+      requestedPlan: requestedPlan,
+      requestedCustomEndsAt: requestedPlan == TenantPlan.custom
+          ? requestedCustomEndsAt
+          : null,
+      reason: normalizedReason,
+      status: TenantActivationRequestStatus.pending,
+      createdAt: now,
+      updatedAt: now,
+    );
+    await _activationRequests.doc().set(request.toMap());
+  }
+
+  Future<void> approveActivationRequest({
+    required String requestId,
+    required String resolvedByUid,
+    required TenantPlan approvedPlan,
+    DateTime? customEndsAt,
+    String? resolvedNotes,
+  }) async {
+    final normalizedRequestId = requestId.trim();
+    final normalizedResolver = resolvedByUid.trim();
+    if (normalizedRequestId.isEmpty) {
+      throw StateError('Solicitud invalida.');
+    }
+    if (normalizedResolver.isEmpty) {
+      throw StateError('Usuario resolutor invalido.');
+    }
+    if (approvedPlan == TenantPlan.trial) {
+      throw StateError('No se puede aprobar activacion al plan trial.');
+    }
+
+    final now = DateTime.now();
+    DateTime resolvedAccessEndsAt;
+    if (approvedPlan == TenantPlan.basic) {
+      resolvedAccessEndsAt = _addMonths(now, 1);
+    } else if (approvedPlan == TenantPlan.pro) {
+      resolvedAccessEndsAt = _addMonths(now, 12);
+    } else {
+      if (customEndsAt == null || !customEndsAt.isAfter(now)) {
+        throw StateError('Para plan custom debes indicar una vigencia futura.');
+      }
+      resolvedAccessEndsAt = customEndsAt;
+    }
+
+    final requestRef = _activationRequests.doc(normalizedRequestId);
+    await _firestore.runTransaction((transaction) async {
+      final requestSnapshot = await transaction.get(requestRef);
+      final requestData = requestSnapshot.data();
+      if (requestData == null) {
+        throw StateError('Solicitud no encontrada.');
+      }
+      final request = TenantActivationRequestModel.fromMap(
+        requestData,
+        id: requestSnapshot.id,
+      );
+      if (request.status != TenantActivationRequestStatus.pending) {
+        throw StateError('La solicitud ya fue procesada.');
+      }
+
+      final tenantRef = _tenants.doc(request.tenantId);
+      final tenantSnapshot = await transaction.get(tenantRef);
+      if (!tenantSnapshot.exists) {
+        throw StateError('Tenant no encontrado para activar.');
+      }
+
+      transaction.update(tenantRef, {
+        'plan': tenantPlanToString(approvedPlan),
+        'accessEndsAt': Timestamp.fromDate(resolvedAccessEndsAt),
+        'trialEndsAt': FieldValue.delete(),
+        'subscriptionStatus': tenantSubscriptionStatusToString(
+          TenantSubscriptionStatus.active,
+        ),
+        'updatedBy': normalizedResolver,
+        'updatedAt': Timestamp.fromDate(now),
+      });
+      transaction.update(requestRef, {
+        'status': tenantActivationRequestStatusToString(
+          TenantActivationRequestStatus.approved,
+        ),
+        'approvedPlan': tenantPlanToString(approvedPlan),
+        'approvedAccessEndsAt': Timestamp.fromDate(resolvedAccessEndsAt),
+        'resolvedByUid': normalizedResolver,
+        'resolvedAt': Timestamp.fromDate(now),
+        'resolvedNotes': (resolvedNotes ?? '').trim(),
+        'updatedAt': Timestamp.fromDate(now),
+      });
+    });
+  }
+
+  Future<void> rejectActivationRequest({
+    required String requestId,
+    required String resolvedByUid,
+    String? resolvedNotes,
+  }) async {
+    final normalizedRequestId = requestId.trim();
+    final normalizedResolver = resolvedByUid.trim();
+    if (normalizedRequestId.isEmpty) {
+      throw StateError('Solicitud invalida.');
+    }
+    if (normalizedResolver.isEmpty) {
+      throw StateError('Usuario resolutor invalido.');
+    }
+    final now = DateTime.now();
+    final requestRef = _activationRequests.doc(normalizedRequestId);
+    await _firestore.runTransaction((transaction) async {
+      final requestSnapshot = await transaction.get(requestRef);
+      final requestData = requestSnapshot.data();
+      if (requestData == null) {
+        throw StateError('Solicitud no encontrada.');
+      }
+      final request = TenantActivationRequestModel.fromMap(
+        requestData,
+        id: requestSnapshot.id,
+      );
+      if (request.status != TenantActivationRequestStatus.pending) {
+        throw StateError('La solicitud ya fue procesada.');
+      }
+
+      transaction.update(requestRef, {
+        'status': tenantActivationRequestStatusToString(
+          TenantActivationRequestStatus.rejected,
+        ),
+        'resolvedByUid': normalizedResolver,
+        'resolvedAt': Timestamp.fromDate(now),
+        'resolvedNotes': (resolvedNotes ?? '').trim(),
+        'updatedAt': Timestamp.fromDate(now),
+      });
+    });
   }
 
   Stream<List<TenantUserModel>> watchTenantUsers(String tenantId) {
