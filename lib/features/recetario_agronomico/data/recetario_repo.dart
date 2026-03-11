@@ -131,6 +131,30 @@ class RecetarioRepo {
     ).update(recipe.toMap());
   }
 
+  Future<void> deleteDraftRecipe(String recipeId) async {
+    _assertWriteAccess();
+    final normalizedId = recipeId.trim();
+    if (normalizedId.isEmpty) {
+      throw StateError('No se puede eliminar una receta sin id.');
+    }
+
+    final recipeRef = TenantPath.recipeRef(_firestore, tenantId, normalizedId);
+    await _firestore.runTransaction((transaction) async {
+      final snapshot = await transaction.get(recipeRef);
+      final data = snapshot.data();
+      if (data == null) {
+        throw StateError('Receta no encontrada.');
+      }
+      final recipe = Recipe.fromMap(data, id: snapshot.id);
+      final status = recipe.status.trim().toLowerCase();
+      final isDraft = status == 'draft' || status == 'borrador';
+      if (!isDraft) {
+        throw StateError('Solo se puede eliminar una receta en borrador.');
+      }
+      transaction.delete(recipeRef);
+    });
+  }
+
   Future<void> publishRecipe(String recipeId) async {
     _assertWriteAccess();
     await TenantPath.recipeRef(

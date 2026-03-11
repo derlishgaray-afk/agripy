@@ -125,6 +125,31 @@ class RecetarioCatalogRepo {
     });
   }
 
+  Future<void> updateLot({
+    required FieldRegistryItem field,
+    required int lotIndex,
+    required String lotName,
+    required double lotAreaHa,
+  }) async {
+    _assertWriteAccess();
+    final fieldId = field.id;
+    if (fieldId == null || fieldId.isEmpty) {
+      throw StateError('Campo sin id.');
+    }
+    if (lotIndex < 0 || lotIndex >= field.lots.length) {
+      throw RangeError.index(lotIndex, field.lots, 'lotIndex');
+    }
+    final lots = field.lots.toList(growable: true);
+    lots[lotIndex] = FieldLot(name: lotName.trim(), areaHa: lotAreaHa);
+    final totalAreaHa = _sumLotsArea(lots);
+    await TenantPath.fieldRef(_firestore, tenantId, fieldId).update({
+      'lots': lots.map((lot) => lot.toMap()).toList(growable: false),
+      'totalAreaHa': totalAreaHa,
+      'updatedBy': currentUid,
+      'updatedAt': Timestamp.now(),
+    });
+  }
+
   double _sumLotsArea(List<FieldLot> lots) {
     var total = 0.0;
     for (final lot in lots) {

@@ -66,10 +66,7 @@ class _FieldsRegistryScreenState extends State<FieldsRegistryScreen> {
                 }
                 try {
                   if (isEditing) {
-                    await _repo.updateField(
-                      fieldId: existing.id!,
-                      name: name,
-                    );
+                    await _repo.updateField(fieldId: existing.id!, name: name);
                   } else {
                     await _repo.createField(name: name);
                   }
@@ -90,14 +87,21 @@ class _FieldsRegistryScreenState extends State<FieldsRegistryScreen> {
     nameController.dispose();
   }
 
-  Future<void> _showLotDialog(FieldRegistryItem field) async {
-    final nameController = TextEditingController();
-    final areaController = TextEditingController();
+  Future<void> _showLotDialog(
+    FieldRegistryItem field, {
+    FieldLot? existing,
+    int? lotIndex,
+  }) async {
+    final isEditing = existing != null;
+    final nameController = TextEditingController(text: existing?.name ?? '');
+    final areaController = TextEditingController(
+      text: existing == null ? '' : existing.areaHa.toString(),
+    );
     await showDialog<void>(
       context: context,
       builder: (context) {
         return AlertDialog(
-          title: const Text('Nuevo lote'),
+          title: Text(isEditing ? 'Editar lote' : 'Nuevo lote'),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -135,11 +139,25 @@ class _FieldsRegistryScreenState extends State<FieldsRegistryScreen> {
                   return;
                 }
                 try {
-                  await _repo.addLot(
-                    field: field,
-                    lotName: name,
-                    lotAreaHa: area,
-                  );
+                  if (isEditing) {
+                    final index = lotIndex;
+                    if (index == null) {
+                      _showSnack('No se pudo editar el lote.');
+                      return;
+                    }
+                    await _repo.updateLot(
+                      field: field,
+                      lotIndex: index,
+                      lotName: name,
+                      lotAreaHa: area,
+                    );
+                  } else {
+                    await _repo.addLot(
+                      field: field,
+                      lotName: name,
+                      lotAreaHa: area,
+                    );
+                  }
                   if (!context.mounted) {
                     return;
                   }
@@ -148,7 +166,7 @@ class _FieldsRegistryScreenState extends State<FieldsRegistryScreen> {
                   _showSnack('No se pudo guardar el lote: $error');
                 }
               },
-              child: const Text('Crear'),
+              child: Text(isEditing ? 'Guardar' : 'Crear'),
             ),
           ],
         );
@@ -204,7 +222,9 @@ class _FieldsRegistryScreenState extends State<FieldsRegistryScreen> {
     if (!mounted) {
       return;
     }
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 
   double _fieldTotalArea(FieldRegistryItem field) {
@@ -266,7 +286,8 @@ class _FieldsRegistryScreenState extends State<FieldsRegistryScreen> {
                             if (_canEdit)
                               IconButton(
                                 tooltip: 'Editar campo',
-                                onPressed: () => _showFieldDialog(existing: field),
+                                onPressed: () =>
+                                    _showFieldDialog(existing: field),
                                 icon: const Icon(Icons.edit_outlined),
                               ),
                             if (_canEdit)
@@ -298,6 +319,19 @@ class _FieldsRegistryScreenState extends State<FieldsRegistryScreen> {
                                     '- ${lot.name}: ${lot.areaHa.toStringAsFixed(2)} ha',
                                   ),
                                 ),
+                                if (_canEdit)
+                                  IconButton(
+                                    icon: const Icon(
+                                      Icons.edit_outlined,
+                                      size: 18,
+                                    ),
+                                    tooltip: 'Editar lote',
+                                    onPressed: () => _showLotDialog(
+                                      field,
+                                      existing: lot,
+                                      lotIndex: entry.key,
+                                    ),
+                                  ),
                                 if (_canEdit)
                                   IconButton(
                                     icon: const Icon(

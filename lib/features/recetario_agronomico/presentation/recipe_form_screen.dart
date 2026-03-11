@@ -302,6 +302,7 @@ class _RecipeFormScreenState extends State<RecipeFormScreen> {
   }
 
   String? _validateDoseLinesForPublish() {
+    var hasProductWithValidDose = false;
     for (var i = 0; i < _doseLineInputs.length; i++) {
       final row = _doseLineInputs[i];
       final product = row.productName.text.trim();
@@ -313,6 +314,10 @@ class _RecipeFormScreenState extends State<RecipeFormScreen> {
       if (doseText.isEmpty || doseValue <= 0) {
         return 'Completa la dosis en "Producto comercial ${i + 1}" antes de publicar.';
       }
+      hasProductWithValidDose = true;
+    }
+    if (!hasProductWithValidDose) {
+      return 'Agrega al menos un producto comercial con dosis antes de publicar.';
     }
     return null;
   }
@@ -507,6 +512,25 @@ class _RecipeFormScreenState extends State<RecipeFormScreen> {
     return _buildFormSnapshot() != _initialFormSnapshot;
   }
 
+  String _normalizedOriginalStatus() {
+    final raw = (widget.recipe?.status ?? '').trim().toLowerCase();
+    if (raw == 'publicado') {
+      return 'published';
+    }
+    if (raw == 'borrador') {
+      return 'draft';
+    }
+    return raw;
+  }
+
+  bool get _saveAsPublishedOnExit => _normalizedOriginalStatus() == 'published';
+
+  String get _unsavedExitSaveStatus =>
+      _saveAsPublishedOnExit ? 'published' : 'draft';
+
+  String get _unsavedExitSaveLabel =>
+      _saveAsPublishedOnExit ? 'Publicar' : 'Guardar borrador';
+
   Future<bool> _confirmExitIfNeeded() async {
     if (_saving) {
       return false;
@@ -533,7 +557,7 @@ class _RecipeFormScreenState extends State<RecipeFormScreen> {
             FilledButton(
               onPressed: () =>
                   Navigator.of(dialogContext).pop(_UnsavedExitDecision.save),
-              child: const Text('Guardar borrador'),
+              child: Text(_unsavedExitSaveLabel),
             ),
           ],
         );
@@ -543,7 +567,7 @@ class _RecipeFormScreenState extends State<RecipeFormScreen> {
       return true;
     }
     if (decision == _UnsavedExitDecision.save) {
-      await _saveRecipe(status: 'draft');
+      await _saveRecipe(status: _unsavedExitSaveStatus);
       return false;
     }
     return false;
@@ -552,6 +576,8 @@ class _RecipeFormScreenState extends State<RecipeFormScreen> {
   @override
   Widget build(BuildContext context) {
     final isEditing = widget.recipe != null;
+    final hideDraftSaveButton =
+        isEditing && _normalizedOriginalStatus() == 'published';
     return PopScope(
       canPop: false,
       onPopInvokedWithResult: (didPop, result) async {
@@ -650,13 +676,14 @@ class _RecipeFormScreenState extends State<RecipeFormScreen> {
                     spacing: 8,
                     runSpacing: 8,
                     children: [
-                      FilledButton.icon(
-                        onPressed: _saving
-                            ? null
-                            : () => _saveRecipe(status: 'draft'),
-                        icon: const Icon(Icons.save_outlined),
-                        label: const Text('Guardar borrador'),
-                      ),
+                      if (!hideDraftSaveButton)
+                        FilledButton.icon(
+                          onPressed: _saving
+                              ? null
+                              : () => _saveRecipe(status: 'draft'),
+                          icon: const Icon(Icons.save_outlined),
+                          label: const Text('Guardar borrador'),
+                        ),
                       OutlinedButton.icon(
                         onPressed: _saving
                             ? null

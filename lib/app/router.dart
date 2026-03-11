@@ -41,6 +41,7 @@ class AppRoutes {
   static const String home = '/';
   static const String recetarioHome = '/recetario-home';
   static const String recipes = '/recipes';
+  static const String emittedRecipes = '/recipes-emitted';
   static const String recipeForm = '/recipe-form';
   static const String emitOrder = '/emit-order';
   static const String fieldRegistry = '/field-registry';
@@ -746,7 +747,18 @@ class AppRouter {
       case AppRoutes.recipes:
         return _recetarioGuardRoute(
           settings: settings,
-          builder: (session) => RecipesListScreen(session: session),
+          builder: (session) => RecipesListScreen(
+            session: session,
+            mode: RecipesListMode.recipes,
+          ),
+        );
+      case AppRoutes.emittedRecipes:
+        return _recetarioGuardRoute(
+          settings: settings,
+          builder: (session) => RecipesListScreen(
+            session: session,
+            mode: RecipesListMode.emitted,
+          ),
         );
       case AppRoutes.recipeForm:
         return _recetarioGuardRoute(

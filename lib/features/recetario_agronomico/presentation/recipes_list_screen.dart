@@ -6,15 +6,25 @@ import '../../../app/router.dart';
 import '../../../core/services/access_controller.dart';
 import '../../../core/services/tenant_path.dart';
 import '../../../shared/widgets/responsive_page.dart';
+import '../data/catalog_repo.dart';
 import '../data/recetario_repo.dart';
+import '../domain/catalog_models.dart';
 import '../domain/models.dart';
+import '../services/mix_validation_service.dart';
 import '../services/recetario_png.dart';
 import '../services/recetario_share.dart';
 
+enum RecipesListMode { recipes, emitted }
+
 class RecipesListScreen extends StatefulWidget {
-  const RecipesListScreen({super.key, required this.session});
+  const RecipesListScreen({
+    super.key,
+    required this.session,
+    this.mode = RecipesListMode.recipes,
+  });
 
   final AppSession session;
+  final RecipesListMode mode;
 
   @override
   State<RecipesListScreen> createState() => _RecipesListScreenState();
@@ -22,6 +32,9 @@ class RecipesListScreen extends StatefulWidget {
 
 class _RecipesListScreenState extends State<RecipesListScreen> {
   late final RecetarioRepo _repo;
+  late final RecetarioCatalogRepo _catalogRepo;
+  final MixValidationService _mixValidationService =
+      const MixValidationService();
   final RecetarioPngService _pngService = RecetarioPngService();
   final RecetarioShareService _shareService = RecetarioShareService();
   final Map<String, Map<String, double>> _fieldLotAreaCache =
@@ -29,13 +42,18 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
   String _statusFilter = 'all';
   String _emittedStateFilter = 'all';
   String? _sharingRecipeId;
+  String? _activeRecipeInteractionKey;
+  final TextEditingController _searchController = TextEditingController();
+  final FocusNode _searchFocusNode = FocusNode();
+  bool _showSearchField = false;
+  String _searchQuery = '';
 
   @override
   void initState() {
     super.initState();
-    if (_isOperator) {
+    if (_showsEmittedWorkflow) {
       _statusFilter = 'emitted';
-      _emittedStateFilter = 'pending';
+      _emittedStateFilter = _isOperator ? 'pending' : 'all';
     }
     _repo = RecetarioRepo(
       firestore: FirebaseFirestore.instance,
@@ -43,11 +61,34 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
       currentUid: widget.session.uid,
       access: widget.session.access,
     );
+    _catalogRepo = RecetarioCatalogRepo(
+      firestore: FirebaseFirestore.instance,
+      tenantId: widget.session.tenantId,
+      currentUid: widget.session.uid,
+      access: widget.session.access,
+    );
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    _searchFocusNode.dispose();
+    super.dispose();
   }
 
   bool get _canEdit => widget.session.access.canEditRecetario;
 
   bool get _isOperator => widget.session.access.role == TenantRole.operator;
+
+  bool get _isRecipesPage => widget.mode == RecipesListMode.recipes;
+
+  bool get _isEmittedPage => widget.mode == RecipesListMode.emitted;
+
+  bool get _showsEmittedWorkflow => _isOperator || _isEmittedPage;
+
+  bool get _showsRecipesWorkflow => !_isOperator && _isRecipesPage;
+
+  String get _screenTitle => _showsEmittedWorkflow ? 'Emitidos' : 'Recetas';
 
   bool get _canEmit {
     final role = widget.session.access.role;
@@ -68,8 +109,61 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
     ).pushNamed(AppRoutes.emitOrder, arguments: recipe);
   }
 
+  Future<void> _confirmDeleteDraftRecipe(Recipe recipe) async {
+    if (!_canEdit) {
+      _showSnack('Sin permisos para eliminar recetas.');
+      return;
+    }
+    final recipeId = recipe.id?.trim() ?? '';
+    if (recipeId.isEmpty) {
+      _showSnack('No se puede eliminar: receta sin id.');
+      return;
+    }
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Eliminar receta en borrador'),
+          content: Text(
+            'Se eliminara la receta "${recipe.title}". Esta accion no se puede deshacer.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Cancelar'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: const Text('Eliminar'),
+            ),
+          ],
+        );
+      },
+    );
+    if (confirm != true) {
+      return;
+    }
+    try {
+      await _repo.deleteDraftRecipe(recipeId);
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        if (_activeRecipeInteractionKey == recipeId) {
+          _activeRecipeInteractionKey = null;
+        }
+      });
+      _showSnack('Receta en borrador eliminada.');
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      _showSnack('No se pudo eliminar la receta: $error');
+    }
+  }
+
   String? get _effectiveStatusFilter {
-    if (_isOperator) {
+    if (_showsEmittedWorkflow) {
       return 'emitted';
     }
     return _statusFilter == 'all' ? null : _statusFilter;
@@ -139,10 +233,96 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
     }
   }
 
+  Future<void> _viewPublishedRecipeDetails(Recipe recipe) async {
+    final supplies = await _loadSuppliesForMixValidation();
+    final mixValidationWarnings = _buildMixValidationWarnings(recipe, supplies);
+    final warnings = recipe.warnings.trim();
+    final notes = recipe.notes.trim();
+    if (!mounted) {
+      return;
+    }
+
+    await showDialog<void>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: Text(recipe.title),
+          content: SizedBox(
+            width: 560,
+            child: SingleChildScrollView(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text('Estado: ${_statusLabel(recipe.status)}'),
+                  const SizedBox(height: 8),
+                  Text('Cultivo: ${recipe.crop} - ${recipe.stage}'),
+                  const SizedBox(height: 4),
+                  Text('Objetivo: ${recipe.objective}'),
+                  const SizedBox(height: 4),
+                  Text('Volumen de agua: ${recipe.waterVolumeLHa} L/ha'),
+                  if (recipe.nozzleTypes.trim().isNotEmpty) ...[
+                    const SizedBox(height: 4),
+                    Text('Tipo de pico/boquilla: ${recipe.nozzleTypes}'),
+                  ],
+                  const SizedBox(height: 12),
+                  Text(
+                    'Mezcla / Dosis / Orden de carga',
+                    style: Theme.of(context).textTheme.titleSmall,
+                  ),
+                  const SizedBox(height: 4),
+                  if (recipe.doseLines.isEmpty)
+                    const Text('- Sin lineas')
+                  else
+                    ...recipe.doseLines.map(
+                      (line) => Text(
+                        '- ${line.productName}: Dosis ${line.dose} ${line.unit}',
+                      ),
+                    ),
+                  const SizedBox(height: 12),
+                  Text(
+                    'Validacion de mezcla',
+                    style: Theme.of(context).textTheme.titleSmall,
+                  ),
+                  const SizedBox(height: 4),
+                  if (mixValidationWarnings.isEmpty)
+                    const Text('- Sin validaciones')
+                  else
+                    ...mixValidationWarnings.map(
+                      (warning) => Text('- $warning'),
+                    ),
+                  const SizedBox(height: 12),
+                  Text(
+                    'Advertencias',
+                    style: Theme.of(context).textTheme.titleSmall,
+                  ),
+                  const SizedBox(height: 4),
+                  Text(warnings.isEmpty ? 'Sin advertencias.' : warnings),
+                  const SizedBox(height: 12),
+                  Text(
+                    'Observaciones',
+                    style: Theme.of(context).textTheme.titleSmall,
+                  ),
+                  const SizedBox(height: 4),
+                  Text(notes.isEmpty ? 'Sin observaciones.' : notes),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Cerrar'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   Future<void> _viewEmittedRecipe(Recipe recipe) async {
     final recipeId = recipe.id;
     RecipeEmissionData? emission = recipe.lastEmission;
-    final mixOrderSteps = _resolveMixOrderSteps(recipe);
     if ((emission == null) && recipeId != null && recipeId.isNotEmpty) {
       emission = await _repo.getLatestEmissionData(recipeId);
     }
@@ -175,7 +355,7 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
                   ],
                   const SizedBox(height: 12),
                   Text(
-                    'Mezcla / dosis',
+                    'Mezcla / Dosis / Orden de carga',
                     style: Theme.of(context).textTheme.titleSmall,
                   ),
                   const SizedBox(height: 4),
@@ -191,19 +371,9 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
                               waterVolumeLHa: recipe.waterVolumeLHa,
                             );
                       return Text(
-                        '- ${line.productName}: Unidad ${line.unit} | Dosis ${line.dose} | Por tanque ${perTank.toStringAsFixed(2)} ${line.unit}',
+                        '- ${line.productName}: Dosis ${line.dose} ${line.unit} | Por tanque ${perTank.toStringAsFixed(2)} ${line.unit}',
                       );
                     }),
-                  const SizedBox(height: 12),
-                  Text(
-                    'Checklist / orden de carga',
-                    style: Theme.of(context).textTheme.titleSmall,
-                  ),
-                  const SizedBox(height: 4),
-                  if (mixOrderSteps.isEmpty)
-                    const Text('- Sin pasos')
-                  else
-                    ...mixOrderSteps.map((step) => Text('* $step')),
                   const SizedBox(height: 12),
                   if (emission != null) ...[
                     Text(
@@ -442,21 +612,151 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
     }
   }
 
+  void _toggleSearchField() {
+    setState(() {
+      if (_showSearchField) {
+        _showSearchField = false;
+        _searchQuery = '';
+        _searchController.clear();
+        _searchFocusNode.unfocus();
+      } else {
+        _showSearchField = true;
+      }
+    });
+    if (_showSearchField) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) {
+          return;
+        }
+        _searchFocusNode.requestFocus();
+      });
+    }
+  }
+
+  bool _matchesSearch(Recipe recipe, {ApplicationOrder? order}) {
+    final query = _searchQuery.trim().toLowerCase();
+    if (query.isEmpty) {
+      return true;
+    }
+    if (_showsEmittedWorkflow) {
+      final emission = recipe.lastEmission;
+      final farm = (emission?.farmName ?? order?.farmName ?? '')
+          .trim()
+          .toLowerCase();
+      final lot = (emission?.plotName ?? order?.plotName ?? '')
+          .trim()
+          .toLowerCase();
+      final operator = (order?.operatorName ?? emission?.operatorName ?? '')
+          .trim()
+          .toLowerCase();
+      return farm.contains(query) ||
+          lot.contains(query) ||
+          operator.contains(query);
+    }
+    final title = recipe.title.trim().toLowerCase();
+    final objective = recipe.objective.trim().toLowerCase();
+    final crop = recipe.crop.trim().toLowerCase();
+    return title.contains(query) ||
+        objective.contains(query) ||
+        crop.contains(query);
+  }
+
   bool get _showFilterSummary {
-    if (_isOperator) {
+    if (_showsEmittedWorkflow) {
       return true;
     }
     return _statusFilter != 'all';
   }
 
   String get _activeFilterSummary {
-    final statusLabel = _isOperator
-        ? 'Emitido'
-        : _statusFilterLabel(_statusFilter);
-    if (_isOperator || _statusFilter == 'emitted') {
-      return '$statusLabel - ${_emittedStateFilterLabel(_emittedStateFilter)}';
+    if (_showsEmittedWorkflow) {
+      return 'Emitido - ${_emittedStateFilterLabel(_emittedStateFilter)}';
     }
-    return statusLabel;
+    return _statusFilterLabel(_statusFilter);
+  }
+
+  String _recipeStatusKey(Recipe recipe) {
+    final raw = recipe.status.trim().toLowerCase();
+    if (raw == 'borrador') {
+      return 'draft';
+    }
+    if (raw == 'publicado') {
+      return 'published';
+    }
+    if (raw == 'emitido') {
+      return 'emitted';
+    }
+    return raw;
+  }
+
+  Future<List<SupplyRegistryItem>> _loadSuppliesForMixValidation() async {
+    try {
+      return await _catalogRepo.watchSupplies().first;
+    } catch (_) {
+      return const <SupplyRegistryItem>[];
+    }
+  }
+
+  String _stripFormulationSuffix(String value) {
+    return value.replaceAll(RegExp(r'\s*\([^()]*\)\s*$'), '').trim();
+  }
+
+  SupplyRegistryItem? _findSupplyByCommercialName(
+    String commercialName,
+    List<SupplyRegistryItem> supplies,
+  ) {
+    final normalized = _stripFormulationSuffix(
+      commercialName,
+    ).trim().toLowerCase();
+    for (final item in supplies) {
+      if (item.commercialName.trim().toLowerCase() == normalized) {
+        return item;
+      }
+    }
+    return null;
+  }
+
+  List<String> _buildMixValidationWarnings(
+    Recipe recipe,
+    List<SupplyRegistryItem> supplies,
+  ) {
+    final items = recipe.doseLines
+        .where((line) {
+          return line.productName.trim().isNotEmpty;
+        })
+        .map((line) {
+          final supply = _findSupplyByCommercialName(
+            line.productName,
+            supplies,
+          );
+          final productName = (supply?.commercialName ?? line.productName)
+              .trim();
+          return MixValidationItem(
+            productName: productName,
+            formulation: (supply?.formulation ?? line.formulation)?.trim(),
+            type: supply?.type,
+            funcion: supply?.funcion ?? line.functionName,
+          );
+        })
+        .toList(growable: false);
+    return _mixValidationService.validateMix(items).warnings;
+  }
+
+  String _recipeInteractionKey(Recipe recipe, int index) {
+    final recipeId = recipe.id?.trim() ?? '';
+    if (recipeId.isNotEmpty) {
+      return recipeId;
+    }
+    return '${recipe.title.trim()}|${recipe.createdAt.microsecondsSinceEpoch}|$index';
+  }
+
+  void _markRecipeAsActive(String interactionKey) {
+    if (_activeRecipeInteractionKey == interactionKey) {
+      return;
+    }
+    setState(() {
+      _activeRecipeInteractionKey = interactionKey;
+    });
   }
 
   String _orderStateKey(ApplicationOrder? order) {
@@ -1441,45 +1741,72 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
     return dosePerHa * affectedAreaHa;
   }
 
-  List<String> _resolveMixOrderSteps(Recipe recipe) {
-    final explicitSteps = recipe.mixOrder
-        .map((step) => step.trim())
-        .where((step) => step.isNotEmpty)
-        .toList(growable: false);
-    if (explicitSteps.isNotEmpty) {
-      return explicitSteps;
-    }
-    return recipe.doseLines
-        .map((line) => line.productName.trim())
-        .where((step) => step.isNotEmpty)
-        .toList(growable: false);
-  }
-
   @override
   Widget build(BuildContext context) {
     final compact = isCompactWidth(context);
+    final showBottomSection = _showFilterSummary || _showSearchField;
+    final bottomHeight =
+        (_showFilterSummary ? 28.0 : 0.0) + (_showSearchField ? 52.0 : 0.0);
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Recetario Agronómico'),
-        bottom: _showFilterSummary
+        title: Text(_screenTitle),
+        bottom: showBottomSection
             ? PreferredSize(
-                preferredSize: const Size.fromHeight(28),
+                preferredSize: Size.fromHeight(bottomHeight),
                 child: Padding(
                   padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-                  child: Align(
-                    alignment: Alignment.centerLeft,
-                    child: Text(
-                      'Filtro: $_activeFilterSummary',
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (_showFilterSummary)
+                        Align(
+                          alignment: Alignment.centerLeft,
+                          child: Text(
+                            'Filtro: $_activeFilterSummary',
+                            style: Theme.of(context).textTheme.bodySmall
+                                ?.copyWith(fontWeight: FontWeight.w600),
+                          ),
+                        ),
+                      if (_showSearchField) ...[
+                        const SizedBox(height: 8),
+                        SizedBox(
+                          height: 40,
+                          child: TextField(
+                            controller: _searchController,
+                            focusNode: _searchFocusNode,
+                            textInputAction: TextInputAction.search,
+                            onChanged: (value) =>
+                                setState(() => _searchQuery = value),
+                            decoration: InputDecoration(
+                              hintText: _showsEmittedWorkflow
+                                  ? 'Buscar por campo, lote u operador'
+                                  : 'Buscar por titulo, objetivo o cultivo',
+                              prefixIcon: const Icon(Icons.search),
+                              suffixIcon: _searchQuery.trim().isEmpty
+                                  ? null
+                                  : IconButton(
+                                      tooltip: 'Limpiar busqueda',
+                                      onPressed: () {
+                                        setState(() {
+                                          _searchQuery = '';
+                                          _searchController.clear();
+                                        });
+                                      },
+                                      icon: const Icon(Icons.clear),
+                                    ),
+                              isDense: true,
+                              border: const OutlineInputBorder(),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ],
                   ),
                 ),
               )
             : null,
         actions: [
-          if (!_isOperator)
+          if (_showsRecipesWorkflow)
             if (compact)
               PopupMenuButton<String>(
                 tooltip: 'Filtrar estado',
@@ -1495,10 +1822,6 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
                   PopupMenuItem<String>(
                     value: 'published',
                     child: Text('Publicado'),
-                  ),
-                  PopupMenuItem<String>(
-                    value: 'emitted',
-                    child: Text('Emitido'),
                   ),
                 ],
               )
@@ -1525,14 +1848,10 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
                       value: 'published',
                       child: Text('Publicado'),
                     ),
-                    DropdownMenuItem<String>(
-                      value: 'emitted',
-                      child: Text('Emitido'),
-                    ),
                   ],
                 ),
               ),
-          if (_statusFilter == 'emitted' || _isOperator)
+          if (_showsEmittedWorkflow)
             if (compact)
               PopupMenuButton<String>(
                 tooltip:
@@ -1590,10 +1909,15 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
                   ],
                 ),
               ),
+          IconButton(
+            tooltip: _showSearchField ? 'Cerrar buscador' : 'Buscar',
+            onPressed: _toggleSearchField,
+            icon: Icon(_showSearchField ? Icons.close : Icons.search),
+          ),
           const SizedBox(width: 8),
         ],
       ),
-      floatingActionButton: _canEdit
+      floatingActionButton: _canEdit && _showsRecipesWorkflow
           ? FloatingActionButton.extended(
               onPressed: () => _openRecipeForm(),
               icon: const Icon(Icons.add),
@@ -1615,6 +1939,8 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
               child: Text(
                 _isOperator
                     ? 'Sin emitidos asignados a este operador.'
+                    : _showsEmittedWorkflow
+                    ? 'Sin emitidos cargados.'
                     : 'Sin recetas cargadas.',
               ),
             );
@@ -1652,8 +1978,18 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
                     })
                     .toList(growable: false);
               }
-              if ((_statusFilter == 'emitted' || _isOperator) &&
-                  _emittedStateFilter != 'all') {
+              if (_showsRecipesWorkflow) {
+                filteredRecipes = filteredRecipes
+                    .where((recipe) {
+                      final statusKey = _recipeStatusKey(recipe);
+                      if (_statusFilter == 'all') {
+                        return statusKey == 'draft' || statusKey == 'published';
+                      }
+                      return statusKey == _statusFilter;
+                    })
+                    .toList(growable: false);
+              }
+              if (_showsEmittedWorkflow && _emittedStateFilter != 'all') {
                 filteredRecipes = filteredRecipes
                     .where((recipe) {
                       final recipeId = recipe.id;
@@ -1665,26 +2001,47 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
                     })
                     .toList(growable: false);
               }
+              if (_searchQuery.trim().isNotEmpty) {
+                filteredRecipes = filteredRecipes
+                    .where((recipe) {
+                      final recipeId = recipe.id;
+                      final order = recipeId == null || recipeId.isEmpty
+                          ? null
+                          : orderByRecipeId[recipeId];
+                      return _matchesSearch(recipe, order: order);
+                    })
+                    .toList(growable: false);
+              }
               if (filteredRecipes.isEmpty) {
+                if (_searchQuery.trim().isNotEmpty) {
+                  return Center(
+                    child: Text(
+                      'Sin resultados para "${_searchQuery.trim()}".',
+                    ),
+                  );
+                }
                 if (_isOperator) {
                   final suffix = _emittedStateFilter == 'all'
                       ? ''
                       : ' en estado ${_emittedStateFilterLabel(_emittedStateFilter).toLowerCase()}';
                   return Center(child: Text('Sin emitidos asignados$suffix.'));
                 }
-                if (_effectiveStatusFilter == 'emitted') {
+                if (_showsEmittedWorkflow) {
+                  if (_emittedStateFilter == 'all') {
+                    return const Center(child: Text('Sin emitidos cargados.'));
+                  }
                   return Center(
                     child: Text(
                       'Sin emitidos en estado ${_emittedStateFilterLabel(_emittedStateFilter).toLowerCase()}.',
                     ),
                   );
                 }
-                if (_effectiveStatusFilter == 'published') {
+                if (_statusFilter == 'published') {
                   return const Center(
                     child: Text('Sin recetarios publicados.'),
                   );
                 }
-                if (_effectiveStatusFilter == 'draft') {
+                if (_statusFilter == 'draft') {
                   return const Center(
                     child: Text('Sin recetarios en borrador.'),
                   );
@@ -1699,127 +2056,176 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
                       const SizedBox(height: 8),
                   itemBuilder: (context, index) {
                     final recipe = filteredRecipes[index];
-                    final normalizedStatus = recipe.status.trim().toLowerCase();
-                    final isEmitted = normalizedStatus == 'emitted';
-                    final isPublished = normalizedStatus == 'published';
+                    final statusKey = _recipeStatusKey(recipe);
+                    final isEmitted = statusKey == 'emitted';
+                    final isPublished = statusKey == 'published';
+                    final isDraft = statusKey == 'draft';
+                    final interactionKey = _recipeInteractionKey(recipe, index);
+                    final isActive =
+                        _activeRecipeInteractionKey == interactionKey;
+                    final colorScheme = Theme.of(context).colorScheme;
                     final emission = recipe.lastEmission;
                     final order = isEmitted && recipe.id != null
                         ? orderByRecipeId[recipe.id!]
                         : null;
-                    return Card(
-                      child: Padding(
-                        padding: const EdgeInsets.all(12),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Row(
-                              children: [
-                                Expanded(
-                                  child: Text(
-                                    recipe.title,
-                                    style: Theme.of(
-                                      context,
-                                    ).textTheme.titleMedium,
-                                  ),
-                                ),
-                                _StatusChip(
-                                  status: isEmitted
-                                      ? _orderStateLabel(order)
-                                      : _statusLabel(recipe.status),
-                                ),
-                              ],
-                            ),
-                            const SizedBox(height: 6),
-                            if (isEmitted) ...[
-                              Text(
-                                'Fecha de emisión: ${emission == null ? "No definida" : _formatDateTime(emission.issuedAt)}',
-                              ),
-                              const SizedBox(height: 4),
-                              Text(
-                                'Campo: ${emission?.farmName ?? "-"}    Lote: ${emission?.plotName ?? "-"}',
-                              ),
-                              const SizedBox(height: 4),
-                              Text(
-                                'Fecha planificada: ${emission?.plannedDate == null ? "No definida" : _formatDateTime(emission!.plannedDate!)}',
-                              ),
-                              const SizedBox(height: 4),
-                              Text(_orderStateDetail(order)),
-                            ] else ...[
-                              Text('Cultivo: ${recipe.crop} - ${recipe.stage}'),
-                              const SizedBox(height: 4),
-                              Text('Objetivo: ${recipe.objective}'),
-                            ],
-                            const SizedBox(height: 10),
-                            Wrap(
-                              spacing: 8,
-                              runSpacing: 8,
-                              children: [
-                                if (_canEdit && !isEmitted)
-                                  OutlinedButton.icon(
-                                    onPressed: () =>
-                                        _openRecipeForm(recipe: recipe),
-                                    icon: const Icon(Icons.edit_outlined),
-                                    label: const Text('Editar'),
-                                  ),
-                                if (_canEmit && isPublished)
-                                  FilledButton.icon(
-                                    onPressed: () => _openEmit(recipe),
-                                    icon: const Icon(Icons.send_outlined),
-                                    label: const Text('Emitir recetario'),
-                                  ),
-                                if (isEmitted)
-                                  OutlinedButton.icon(
-                                    onPressed: () => _viewEmittedRecipe(recipe),
-                                    icon: const Icon(Icons.visibility_outlined),
-                                    label: const Text('Ver'),
-                                  ),
-                                if (isEmitted)
-                                  OutlinedButton.icon(
-                                    onPressed: () =>
-                                        _viewRequiredProducts(recipe),
-                                    icon: const Icon(Icons.calculate_outlined),
-                                    label: const Text('Productos'),
-                                  ),
-                                if (_canUpdateApplications &&
-                                    isEmitted &&
-                                    order != null &&
-                                    (!_isOperator ||
-                                        _orderBelongsToCurrentOperator(order)))
-                                  OutlinedButton.icon(
-                                    onPressed: () => _showEmissionUpdateDialog(
-                                      recipe: recipe,
-                                      order: order,
+                    return Listener(
+                      behavior: HitTestBehavior.translucent,
+                      onPointerDown: (_) => _markRecipeAsActive(interactionKey),
+                      child: Card(
+                        color: isActive ? colorScheme.primaryContainer : null,
+                        elevation: isActive ? 4 : 1,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          side: BorderSide(
+                            color: isActive
+                                ? colorScheme.primary
+                                : colorScheme.outlineVariant,
+                            width: isActive ? 2 : 1,
+                          ),
+                        ),
+                        child: Padding(
+                          padding: const EdgeInsets.all(12),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: Text(
+                                      recipe.title,
+                                      style: Theme.of(
+                                        context,
+                                      ).textTheme.titleMedium,
                                     ),
-                                    icon: const Icon(Icons.event_note_outlined),
-                                    label: const Text('Actualizar'),
                                   ),
-                                if (_canEmit && isEmitted)
-                                  Tooltip(
-                                    message: 'Volver a compartir PNG',
-                                    child: FilledButton(
-                                      onPressed: _sharingRecipeId == recipe.id
-                                          ? null
-                                          : () => _reshareAsPng(recipe),
-                                      style: FilledButton.styleFrom(
-                                        minimumSize: const Size(46, 40),
-                                        padding: const EdgeInsets.symmetric(
-                                          horizontal: 12,
-                                        ),
+                                  _StatusChip(
+                                    status: isEmitted
+                                        ? _orderStateLabel(order)
+                                        : _statusLabel(recipe.status),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 6),
+                              if (isEmitted) ...[
+                                Text(
+                                  'Fecha de emisión: ${emission == null ? "No definida" : _formatDateTime(emission.issuedAt)}',
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  'Campo: ${emission?.farmName ?? "-"}    Lote: ${emission?.plotName ?? "-"}',
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  'Fecha planificada: ${emission?.plannedDate == null ? "No definida" : _formatDateTime(emission!.plannedDate!)}',
+                                ),
+                                const SizedBox(height: 4),
+                                Text(_orderStateDetail(order)),
+                              ] else ...[
+                                Text(
+                                  'Cultivo: ${recipe.crop} - ${recipe.stage}',
+                                ),
+                                const SizedBox(height: 4),
+                                Text('Objetivo: ${recipe.objective}'),
+                              ],
+                              const SizedBox(height: 10),
+                              Wrap(
+                                spacing: 8,
+                                runSpacing: 8,
+                                children: [
+                                  if (_canEdit && !isEmitted)
+                                    OutlinedButton.icon(
+                                      onPressed: () =>
+                                          _openRecipeForm(recipe: recipe),
+                                      icon: const Icon(Icons.edit_outlined),
+                                      label: const Text('Editar'),
+                                    ),
+                                  if (_canEdit && isDraft)
+                                    OutlinedButton.icon(
+                                      onPressed: () =>
+                                          _confirmDeleteDraftRecipe(recipe),
+                                      icon: const Icon(Icons.delete_outline),
+                                      label: const Text('Eliminar'),
+                                    ),
+                                  if (_canEmit && isPublished)
+                                    FilledButton.icon(
+                                      onPressed: () => _openEmit(recipe),
+                                      icon: const Icon(Icons.send_outlined),
+                                      label: const Text('Emitir recetario'),
+                                    ),
+                                  if (isPublished)
+                                    OutlinedButton.icon(
+                                      onPressed: () =>
+                                          _viewPublishedRecipeDetails(recipe),
+                                      icon: const Icon(
+                                        Icons.visibility_outlined,
                                       ),
-                                      child: _sharingRecipeId == recipe.id
-                                          ? const SizedBox(
-                                              width: 18,
-                                              height: 18,
-                                              child: CircularProgressIndicator(
-                                                strokeWidth: 2.2,
-                                              ),
-                                            )
-                                          : const Icon(Icons.share_outlined),
+                                      label: const Text('Ver detalles'),
                                     ),
-                                  ),
-                              ],
-                            ),
-                          ],
+                                  if (isEmitted)
+                                    OutlinedButton.icon(
+                                      onPressed: () =>
+                                          _viewEmittedRecipe(recipe),
+                                      icon: const Icon(
+                                        Icons.visibility_outlined,
+                                      ),
+                                      label: const Text('Ver'),
+                                    ),
+                                  if (isEmitted)
+                                    OutlinedButton.icon(
+                                      onPressed: () =>
+                                          _viewRequiredProducts(recipe),
+                                      icon: const Icon(
+                                        Icons.calculate_outlined,
+                                      ),
+                                      label: const Text('Productos'),
+                                    ),
+                                  if (_canUpdateApplications &&
+                                      isEmitted &&
+                                      order != null &&
+                                      (!_isOperator ||
+                                          _orderBelongsToCurrentOperator(
+                                            order,
+                                          )))
+                                    OutlinedButton.icon(
+                                      onPressed: () =>
+                                          _showEmissionUpdateDialog(
+                                            recipe: recipe,
+                                            order: order,
+                                          ),
+                                      icon: const Icon(
+                                        Icons.event_note_outlined,
+                                      ),
+                                      label: const Text('Actualizar'),
+                                    ),
+                                  if (_canEmit && isEmitted)
+                                    Tooltip(
+                                      message: 'Volver a compartir PNG',
+                                      child: FilledButton(
+                                        onPressed: _sharingRecipeId == recipe.id
+                                            ? null
+                                            : () => _reshareAsPng(recipe),
+                                        style: FilledButton.styleFrom(
+                                          minimumSize: const Size(46, 40),
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 12,
+                                          ),
+                                        ),
+                                        child: _sharingRecipeId == recipe.id
+                                            ? const SizedBox(
+                                                width: 18,
+                                                height: 18,
+                                                child:
+                                                    CircularProgressIndicator(
+                                                      strokeWidth: 2.2,
+                                                    ),
+                                              )
+                                            : const Icon(Icons.share_outlined),
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            ],
+                          ),
                         ),
                       ),
                     );

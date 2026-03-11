@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../../app/router.dart';
+import '../../../core/services/access_controller.dart';
 import '../../../shared/widgets/responsive_page.dart';
 
 class RecetarioHomeScreen extends StatelessWidget {
@@ -10,17 +11,28 @@ class RecetarioHomeScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isOperator = session.access.role == TenantRole.operator;
     return Scaffold(
       appBar: AppBar(title: const Text('Módulo Recetario Agronómico')),
       body: ResponsivePage(
         child: ListView(
           padding: const EdgeInsets.only(bottom: 24),
           children: [
+            if (!isOperator) ...[
+              _ModuleCard(
+                icon: Icons.description_outlined,
+                title: 'Recetas',
+                subtitle: 'Borradores y publicados con acceso a nueva receta',
+                onTap: () => Navigator.of(context).pushNamed(AppRoutes.recipes),
+              ),
+              const SizedBox(height: 10),
+            ],
             _ModuleCard(
-              icon: Icons.description_outlined,
-              title: 'Recetarios',
-              subtitle: 'Crear, filtrar, emitir y compartir recetarios',
-              onTap: () => Navigator.of(context).pushNamed(AppRoutes.recipes),
+              icon: Icons.local_shipping_outlined,
+              title: 'Emitidos',
+              subtitle: 'Pendientes, completados y anulados',
+              onTap: () =>
+                  Navigator.of(context).pushNamed(AppRoutes.emittedRecipes),
             ),
             const SizedBox(height: 10),
             _ModuleCard(
@@ -34,8 +46,7 @@ class RecetarioHomeScreen extends StatelessWidget {
             _ModuleCard(
               icon: Icons.inventory_2_outlined,
               title: 'Registro de Insumos',
-              subtitle:
-                  'Nombre comercial, principio activo, unidad y tipo',
+              subtitle: 'Nombre comercial, principio activo, unidad y tipo',
               onTap: () =>
                   Navigator.of(context).pushNamed(AppRoutes.inputRegistry),
             ),
