@@ -47,6 +47,7 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
   final FocusNode _searchFocusNode = FocusNode();
   bool _showSearchField = false;
   String _searchQuery = '';
+  double _visibleEmittedAreaHa = 0;
 
   @override
   void initState() {
@@ -670,9 +671,92 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
 
   String get _activeFilterSummary {
     if (_showsEmittedWorkflow) {
-      return 'Emitido - ${_emittedStateFilterLabel(_emittedStateFilter)}';
+      final areaLabel = _formatAreaHa(_visibleEmittedAreaHa);
+      return 'Emitido - ${_emittedStateFilterLabel(_emittedStateFilter)} ($areaLabel Ha.)';
     }
     return _statusFilterLabel(_statusFilter);
+  }
+
+  double _summaryAreaHaForRecipe(Recipe recipe, {ApplicationOrder? order}) {
+    final baseArea = _baseAreaHaForRecipe(recipe, order: order);
+    if (baseArea <= 0) {
+      return 0;
+    }
+    if (_emittedStateFilter == 'pending' && order != null) {
+      final planned = _plannedTankCount(order);
+      if (planned <= 0) {
+        return baseArea;
+      }
+      final pending = _pendingTankCount(order);
+      if (pending <= 0) {
+        return 0;
+      }
+      final ratio = (pending / planned).clamp(0, 1).toDouble();
+      return baseArea * ratio;
+    }
+    if (_emittedStateFilter == 'completed' && order != null) {
+      final planned = _plannedTankCount(order);
+      if (planned <= 0) {
+        return baseArea;
+      }
+      final applied = _appliedTankCount(order);
+      if (applied <= 0) {
+        return 0;
+      }
+      final ratio = (applied / planned).clamp(0, 1).toDouble();
+      return baseArea * ratio;
+    }
+    return baseArea;
+  }
+
+  double _baseAreaHaForRecipe(Recipe recipe, {ApplicationOrder? order}) {
+    if (order != null) {
+      if (order.areaHa > 0) {
+        return order.areaHa;
+      }
+      if (order.affectedAreaHa > 0) {
+        return order.affectedAreaHa;
+      }
+    }
+    final emission = recipe.lastEmission;
+    if (emission == null) {
+      return 0;
+    }
+    if (emission.areaHa > 0) {
+      return emission.areaHa;
+    }
+    if (emission.affectedAreaHa > 0) {
+      return emission.affectedAreaHa;
+    }
+    return 0;
+  }
+
+  void _syncVisibleEmittedAreaHa(double value) {
+    if ((_visibleEmittedAreaHa - value).abs() < 0.005) {
+      return;
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+      if ((_visibleEmittedAreaHa - value).abs() < 0.005) {
+        return;
+      }
+      setState(() {
+        _visibleEmittedAreaHa = value;
+      });
+    });
+  }
+
+  String _formatAreaHa(double value) {
+    final safeValue = value.isFinite ? value : 0;
+    final fixed = safeValue.toStringAsFixed(2);
+    final parts = fixed.split('.');
+    final wholePart = parts.first.replaceAllMapped(
+      RegExp(r'\B(?=(\d{3})+(?!\d))'),
+      (_) => '.',
+    );
+    return '$wholePart,${parts.last}';
   }
 
   String _recipeStatusKey(Recipe recipe) {
@@ -2137,6 +2221,20 @@ class _RecipesListScreenState extends State<RecipesListScreen> {
                       return _matchesSearch(recipe, order: order);
                     })
                     .toList(growable: false);
+              }
+              if (_showsEmittedWorkflow) {
+                final visibleArea = filteredRecipes.fold<double>(0, (
+                  total,
+                  recipe,
+                ) {
+                  final recipeId = recipe.id;
+                  final order = recipeId == null || recipeId.isEmpty
+                      ? null
+                      : orderByRecipeId[recipeId];
+                  return total +
+                      _summaryAreaHaForRecipe(recipe, order: order);
+                });
+                _syncVisibleEmittedAreaHa(visibleArea);
               }
               if (filteredRecipes.isEmpty) {
                 if (_searchQuery.trim().isNotEmpty) {
