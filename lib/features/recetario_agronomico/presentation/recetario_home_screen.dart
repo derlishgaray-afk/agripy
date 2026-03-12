@@ -12,13 +12,15 @@ class RecetarioHomeScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isOperator = session.access.role == TenantRole.operator;
+    final isSecondaryUser = !session.isPrincipalUser;
+
     return Scaffold(
-      appBar: AppBar(title: const Text('Módulo Recetario Agronómico')),
+      appBar: AppBar(title: const Text('Modulo Recetario Agronomico')),
       body: ResponsivePage(
         child: ListView(
           padding: const EdgeInsets.only(bottom: 24),
           children: [
-            if (!isOperator) ...[
+            if (!isSecondaryUser && !isOperator) ...[
               _ModuleCard(
                 icon: Icons.description_outlined,
                 title: 'Recetas',
@@ -36,35 +38,37 @@ class RecetarioHomeScreen extends StatelessWidget {
             ),
             const SizedBox(height: 10),
             _ModuleCard(
-              icon: Icons.agriculture_outlined,
-              title: 'Registro de Campos',
-              subtitle: 'Campos y lotes con sus superficies',
-              onTap: () =>
-                  Navigator.of(context).pushNamed(AppRoutes.fieldRegistry),
-            ),
-            const SizedBox(height: 10),
-            _ModuleCard(
-              icon: Icons.inventory_2_outlined,
-              title: 'Registro de Insumos',
-              subtitle: 'Nombre comercial, principio activo, unidad y tipo',
-              onTap: () =>
-                  Navigator.of(context).pushNamed(AppRoutes.inputRegistry),
-            ),
-            const SizedBox(height: 10),
-            _ModuleCard(
-              icon: Icons.person_outline,
-              title: 'Registro de Operadores',
-              subtitle: 'Operadores habilitados para aplicaciones',
-              onTap: () =>
-                  Navigator.of(context).pushNamed(AppRoutes.operatorRegistry),
-            ),
-            const SizedBox(height: 10),
-            _ModuleCard(
               icon: Icons.assessment_outlined,
               title: 'Informes',
               subtitle: 'Resumen y seguimiento de aplicaciones',
               onTap: () => Navigator.of(context).pushNamed(AppRoutes.reports),
             ),
+            if (!isSecondaryUser) ...[
+              const SizedBox(height: 10),
+              _ModuleCard(
+                icon: Icons.agriculture_outlined,
+                title: 'Registro de Campos',
+                subtitle: 'Campos y lotes con sus superficies',
+                onTap: () =>
+                    Navigator.of(context).pushNamed(AppRoutes.fieldRegistry),
+              ),
+              const SizedBox(height: 10),
+              _ModuleCard(
+                icon: Icons.inventory_2_outlined,
+                title: 'Registro de Insumos',
+                subtitle: 'Nombre comercial, principio activo, unidad y tipo',
+                onTap: () =>
+                    Navigator.of(context).pushNamed(AppRoutes.inputRegistry),
+              ),
+              const SizedBox(height: 10),
+              _ModuleCard(
+                icon: Icons.person_outline,
+                title: 'Registro de Operadores',
+                subtitle: 'Operadores habilitados para aplicaciones',
+                onTap: () =>
+                    Navigator.of(context).pushNamed(AppRoutes.operatorRegistry),
+              ),
+            ],
           ],
         ),
       ),

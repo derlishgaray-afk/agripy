@@ -5,6 +5,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart'
     show TargetPlatform, defaultTargetPlatform, kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -67,12 +68,14 @@ class AppSession {
     required this.tenantId,
     required this.tenantName,
     required this.access,
+    required this.isPrincipalUser,
   });
 
   final String uid;
   final String tenantId;
   final String tenantName;
   final TenantUserAccess access;
+  final bool isPrincipalUser;
 
   bool get hasRecetarioAgronomico => access.hasRecetarioAgronomico;
 }
@@ -168,6 +171,14 @@ class SessionController extends ChangeNotifier {
   final SuperAdminGuard _superAdminGuard;
 
   StreamSubscription<User?>? _authSub;
+  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _tenantSub;
+  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _tenantUserSub;
+  String? _watchedTenantId;
+  String? _watchedUid;
+  bool _refreshingFromTenantWatch = false;
+  Timer? _scheduledAccessRecheck;
+  bool _notifyScheduled = false;
+  bool _isDisposed = false;
 
   bool isLoading = true;
   AppSession? session;
@@ -196,12 +207,39 @@ class SessionController extends ChangeNotifier {
     return 'Usuario';
   }
 
+  void _notifyListenersSafely() {
+    if (_isDisposed) {
+      return;
+    }
+    final binding = WidgetsBinding.instance;
+    final phase = binding.schedulerPhase;
+    if (phase == SchedulerPhase.idle ||
+        phase == SchedulerPhase.postFrameCallbacks) {
+      if (_isDisposed) {
+        return;
+      }
+      notifyListeners();
+      return;
+    }
+    if (_notifyScheduled) {
+      return;
+    }
+    _notifyScheduled = true;
+    binding.addPostFrameCallback((_) {
+      _notifyScheduled = false;
+      if (_isDisposed) {
+        return;
+      }
+      notifyListeners();
+    });
+  }
+
   Future<void> _onAuthStateChanged(User? user) async {
     currentUser = user;
     if (user == null) {
       _clearSession();
       isLoading = false;
-      notifyListeners();
+      _notifyListenersSafely();
       return;
     }
 
@@ -209,7 +247,7 @@ class SessionController extends ChangeNotifier {
 
     isLoading = true;
     _clearSession();
-    notifyListeners();
+    _notifyListenersSafely();
 
     try {
       superAdminProfile = await _superAdminGuard.loadActiveSuperAdmin(user.uid);
@@ -241,12 +279,23 @@ class SessionController extends ChangeNotifier {
           tenantId,
         ).get();
         final tenantName = _resolveTenantName(tenantDoc.data(), tenantId);
+        final isPrincipalUser = _isPrincipalUidForTenant(
+          uid: user.uid,
+          tenantId: tenantId,
+          tenantData: tenantDoc.data(),
+        );
 
         session = AppSession(
           uid: user.uid,
           tenantId: tenantId,
           tenantName: tenantName,
           access: access,
+          isPrincipalUser: isPrincipalUser,
+        );
+        _scheduleAccessRecheck(
+          tenantId: tenantId,
+          uid: user.uid,
+          tenantData: tenantDoc.data(),
         );
       } on TenantBlockedException catch (error) {
         if (isSuperAdmin) {
@@ -267,16 +316,19 @@ class SessionController extends ChangeNotifier {
           blockingMessage = _errorText(error);
         }
       }
+      _attachTenantAccessWatchers(tenantId: tenantId, uid: user.uid);
     } catch (error) {
       blockingMessage = _errorText(error);
       session = null;
     } finally {
       isLoading = false;
-      notifyListeners();
+      _notifyListenersSafely();
     }
   }
 
   void _clearSession() {
+    _cancelTenantAccessWatchers();
+    _cancelScheduledAccessRecheck();
     session = null;
     superAdminProfile = null;
     blockingMessage = null;
@@ -294,6 +346,29 @@ class SessionController extends ChangeNotifier {
       return raw.trim();
     }
     return fallbackTenantId;
+  }
+
+  String _resolvePrincipalUid(
+    Map<String, dynamic>? tenantData,
+    String tenantId,
+  ) {
+    final createdBy = (tenantData?['createdBy'] as String? ?? '').trim();
+    if (createdBy.isNotEmpty) {
+      return createdBy;
+    }
+    return tenantId.trim();
+  }
+
+  bool _isPrincipalUidForTenant({
+    required String uid,
+    required String tenantId,
+    required Map<String, dynamic>? tenantData,
+  }) {
+    final principalUid = _resolvePrincipalUid(tenantData, tenantId);
+    if (principalUid.isEmpty) {
+      return false;
+    }
+    return uid.trim() == principalUid;
   }
 
   Future<void> _provisionPersonalWorkspace(User user) async {
@@ -387,6 +462,171 @@ class SessionController extends ChangeNotifier {
     return 'Mi espacio';
   }
 
+  void _attachTenantAccessWatchers({
+    required String tenantId,
+    required String uid,
+  }) {
+    if (_watchedTenantId == tenantId &&
+        _watchedUid == uid &&
+        _tenantSub != null &&
+        _tenantUserSub != null) {
+      return;
+    }
+    _cancelTenantAccessWatchers();
+    _watchedTenantId = tenantId;
+    _watchedUid = uid;
+
+    var skipTenantInitial = true;
+    _tenantSub = TenantPath.tenantRef(_firestore, tenantId).snapshots().listen(
+      (_) {
+        if (skipTenantInitial) {
+          skipTenantInitial = false;
+          return;
+        }
+        unawaited(_refreshSessionFromTenantWatch(tenantId: tenantId, uid: uid));
+      },
+      onError: (_) {},
+    );
+
+    var skipTenantUserInitial = true;
+    _tenantUserSub = TenantPath.tenantUserRef(
+      _firestore,
+      tenantId,
+      uid,
+    ).snapshots().listen(
+      (_) {
+        if (skipTenantUserInitial) {
+          skipTenantUserInitial = false;
+          return;
+        }
+        unawaited(_refreshSessionFromTenantWatch(tenantId: tenantId, uid: uid));
+      },
+      onError: (_) {},
+    );
+  }
+
+  Future<void> _refreshSessionFromTenantWatch({
+    required String tenantId,
+    required String uid,
+  }) async {
+    final user = currentUser;
+    if (user == null || user.uid != uid) {
+      return;
+    }
+    if (_watchedTenantId != tenantId || _watchedUid != uid) {
+      return;
+    }
+    if (_refreshingFromTenantWatch) {
+      return;
+    }
+    _refreshingFromTenantWatch = true;
+    try {
+      try {
+        final access = await _accessController.loadTenantUserAccess(tenantId, uid);
+        if (!access.isActive) {
+          throw StateError('Usuario bloqueado en la empresa actual.');
+        }
+        final tenantDoc = await TenantPath.tenantRef(_firestore, tenantId).get();
+        final tenantName = _resolveTenantName(tenantDoc.data(), tenantId);
+        final isPrincipalUser = _isPrincipalUidForTenant(
+          uid: uid,
+          tenantId: tenantId,
+          tenantData: tenantDoc.data(),
+        );
+        session = AppSession(
+          uid: uid,
+          tenantId: tenantId,
+          tenantName: tenantName,
+          access: access,
+          isPrincipalUser: isPrincipalUser,
+        );
+        blockingMessage = null;
+        tenantBlockingSupportContext = null;
+      } on TenantBlockedException catch (error) {
+        if (isSuperAdmin) {
+          warningMessage = _tenantBlockedMessage(error);
+        } else {
+          await _handleTenantBlocked(tenantId: tenantId, user: user, error: error);
+          session = null;
+        }
+      } catch (error) {
+        if (isSuperAdmin) {
+          warningMessage = _errorText(error);
+        } else {
+          blockingMessage = _errorText(error);
+          tenantBlockingSupportContext = null;
+          session = null;
+        }
+      }
+      _notifyListenersSafely();
+    } finally {
+      _refreshingFromTenantWatch = false;
+    }
+  }
+
+  void _cancelTenantAccessWatchers() {
+    _tenantSub?.cancel();
+    _tenantSub = null;
+    _tenantUserSub?.cancel();
+    _tenantUserSub = null;
+    _watchedTenantId = null;
+    _watchedUid = null;
+  }
+
+  DateTime? _parseOptionalDateTime(dynamic value) {
+    if (value == null) {
+      return null;
+    }
+    if (value is Timestamp) {
+      return value.toDate();
+    }
+    if (value is DateTime) {
+      return value;
+    }
+    if (value is int) {
+      return DateTime.fromMillisecondsSinceEpoch(value);
+    }
+    if (value is String) {
+      return DateTime.tryParse(value);
+    }
+    return null;
+  }
+
+  void _scheduleAccessRecheck({
+    required String tenantId,
+    required String uid,
+    required Map<String, dynamic>? tenantData,
+  }) {
+    _cancelScheduledAccessRecheck();
+    if (tenantData == null) {
+      return;
+    }
+
+    final plan = (tenantData['plan'] as String? ?? '').trim().toLowerCase();
+    final expiresAt = plan == 'trial'
+        ? _parseOptionalDateTime(tenantData['trialEndsAt'])
+        : _parseOptionalDateTime(tenantData['accessEndsAt']);
+    if (expiresAt == null) {
+      return;
+    }
+
+    var delay = expiresAt.difference(DateTime.now());
+    if (delay <= Duration.zero) {
+      delay = const Duration(seconds: 1);
+    } else {
+      delay += const Duration(seconds: 1);
+    }
+
+    _scheduledAccessRecheck = Timer(delay, () {
+      unawaited(_refreshSessionFromTenantWatch(tenantId: tenantId, uid: uid));
+    });
+  }
+
+  void _cancelScheduledAccessRecheck() {
+    _scheduledAccessRecheck?.cancel();
+    _scheduledAccessRecheck = null;
+  }
+
   Future<void> _handleTenantBlocked({
     required String tenantId,
     required User user,
@@ -424,19 +664,16 @@ class SessionController extends ChangeNotifier {
     required String tenantId,
     required String uid,
   }) async {
-    if (uid == tenantId) {
-      return true;
-    }
     try {
-      final snapshot = await TenantPath.tenantUserRef(
+      final snapshot = await TenantPath.tenantRef(
         _firestore,
         tenantId,
-        uid,
       ).get();
-      final role = (snapshot.data()?['role'] as String? ?? '')
-          .trim()
-          .toLowerCase();
-      return role == 'admin';
+      return _isPrincipalUidForTenant(
+        uid: uid,
+        tenantId: tenantId,
+        tenantData: snapshot.data(),
+      );
     } catch (_) {
       return false;
     }
@@ -683,6 +920,67 @@ class SessionController extends ChangeNotifier {
     });
   }
 
+  Future<void> updatePrincipalTenantIdentity({
+    required String tenantName,
+    required String responsibleName,
+  }) async {
+    final user = currentUser;
+    final currentSession = session;
+    if (user == null || currentSession == null) {
+      throw StateError('No hay sesion tenant activa.');
+    }
+    if (isSuperAdmin) {
+      throw StateError('Esta accion no aplica para super admin.');
+    }
+
+    final normalizedTenantName = tenantName.trim();
+    final normalizedResponsibleName = responsibleName.trim();
+    if (normalizedTenantName.isEmpty) {
+      throw StateError('El nombre de empresa no puede estar vacio.');
+    }
+    if (normalizedResponsibleName.isEmpty) {
+      throw StateError('El nombre de responsable no puede estar vacio.');
+    }
+
+    final tenantId = currentSession.tenantId.trim();
+    if (tenantId.isEmpty || !currentSession.isPrincipalUser) {
+      throw StateError(
+        'Solo el usuario principal puede editar empresa y responsable.',
+      );
+    }
+
+    final now = FieldValue.serverTimestamp();
+    final batch = _firestore.batch();
+    batch.update(TenantPath.tenantRef(_firestore, tenantId), {
+      'name': normalizedTenantName,
+      'updatedAt': now,
+      'updatedBy': user.uid,
+    });
+    batch.set(TenantPath.tenantUserRef(_firestore, tenantId, user.uid), {
+      'displayName': normalizedResponsibleName,
+      'updatedAt': now,
+      'updatedBy': user.uid,
+    }, SetOptions(merge: true));
+    batch.set(_firestore.collection('user_tenant').doc(user.uid), {
+      'displayName': normalizedResponsibleName,
+      'updatedAt': now,
+    }, SetOptions(merge: true));
+    await batch.commit();
+    session = AppSession(
+      uid: currentSession.uid,
+      tenantId: currentSession.tenantId,
+      tenantName: normalizedTenantName,
+      access: TenantUserAccess(
+        role: currentSession.access.role,
+        activeModules: currentSession.access.activeModules,
+        status: currentSession.access.status,
+        displayName: normalizedResponsibleName,
+      ),
+      isPrincipalUser: currentSession.isPrincipalUser,
+    );
+    _notifyListenersSafely();
+  }
+
   Future<void> signInWithEmailPassword({
     required String email,
     required String password,
@@ -839,6 +1137,9 @@ class SessionController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _isDisposed = true;
+    _cancelTenantAccessWatchers();
+    _cancelScheduledAccessRecheck();
     _authSub?.cancel();
     super.dispose();
   }
@@ -868,6 +1169,7 @@ class AppRouter {
       case AppRoutes.recipes:
         return _recetarioGuardRoute(
           settings: settings,
+          allowSecondaryUser: false,
           builder: (session) => RecipesListScreen(
             session: session,
             mode: RecipesListMode.recipes,
@@ -884,6 +1186,7 @@ class AppRouter {
       case AppRoutes.recipeForm:
         return _recetarioGuardRoute(
           settings: settings,
+          allowSecondaryUser: false,
           builder: (session) {
             final arg = settings.arguments;
             if (arg != null && arg is! Recipe) {
@@ -897,6 +1200,7 @@ class AppRouter {
       case AppRoutes.emitOrder:
         return _recetarioGuardRoute(
           settings: settings,
+          allowSecondaryUser: false,
           builder: (session) {
             final arg = settings.arguments;
             if (arg is! Recipe) {
@@ -910,16 +1214,19 @@ class AppRouter {
       case AppRoutes.fieldRegistry:
         return _recetarioGuardRoute(
           settings: settings,
+          allowSecondaryUser: false,
           builder: (session) => FieldsRegistryScreen(session: session),
         );
       case AppRoutes.inputRegistry:
         return _recetarioGuardRoute(
           settings: settings,
+          allowSecondaryUser: false,
           builder: (session) => InputsRegistryScreen(session: session),
         );
       case AppRoutes.operatorRegistry:
         return _recetarioGuardRoute(
           settings: settings,
+          allowSecondaryUser: false,
           builder: (session) => OperatorsRegistryScreen(session: session),
         );
       case AppRoutes.reports:
@@ -1024,6 +1331,7 @@ class AppRouter {
 
   Route<dynamic> _recetarioGuardRoute({
     required RouteSettings settings,
+    bool allowSecondaryUser = true,
     required Widget Function(AppSession session) builder,
   }) {
     final session = sessionController.session;
@@ -1041,6 +1349,17 @@ class AppRouter {
         builder: (_) => const BlockedScreen(
           title: 'Modulo no habilitado',
           message: 'Tu usuario no tiene acceso a recetario agronomico.',
+        ),
+      );
+    }
+    final isSecondaryUser = !session.isPrincipalUser;
+    if (!allowSecondaryUser && isSecondaryUser) {
+      return MaterialPageRoute<void>(
+        settings: settings,
+        builder: (_) => const BlockedScreen(
+          title: 'No autorizado',
+          message:
+              'Tu usuario secundario solo tiene acceso a Emitidos e Informes.',
         ),
       );
     }
@@ -1200,6 +1519,155 @@ class _ModuleHomeScreen extends StatelessWidget {
     await themeController.setThemeMode(selectedMode);
   }
 
+  bool _isPrincipalTenantUser(AppSession? session) {
+    if (session == null || sessionController.isSuperAdmin) {
+      return false;
+    }
+    return session.isPrincipalUser;
+  }
+
+  Future<void> _openPrincipalIdentitySettings(
+    BuildContext context, {
+    required AppSession session,
+  }) async {
+    var tenantName = session.tenantName;
+    var responsibleName = session.access.displayName;
+    try {
+      final input = await showDialog<Map<String, String>>(
+        context: context,
+        builder: (dialogContext) {
+          return AlertDialog(
+            title: const Text('Empresa y responsable'),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextFormField(
+                    initialValue: tenantName,
+                    textCapitalization: TextCapitalization.words,
+                    onChanged: (value) => tenantName = value,
+                    decoration: const InputDecoration(
+                      labelText: 'Nombre de empresa',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextFormField(
+                    initialValue: responsibleName,
+                    textCapitalization: TextCapitalization.words,
+                    onChanged: (value) => responsibleName = value,
+                    decoration: const InputDecoration(
+                      labelText: 'Nombre que se mostrara como responsable',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(),
+                child: const Text('Cancelar'),
+              ),
+              FilledButton(
+                onPressed: () {
+                  final normalizedTenantName = tenantName.trim();
+                  final normalizedResponsibleName = responsibleName.trim();
+                  if (normalizedTenantName.isEmpty ||
+                      normalizedResponsibleName.isEmpty) {
+                    ScaffoldMessenger.of(dialogContext).showSnackBar(
+                      const SnackBar(
+                        content: Text('Completa empresa y responsable.'),
+                      ),
+                    );
+                    return;
+                  }
+                  Navigator.of(dialogContext).pop(<String, String>{
+                    'tenantName': normalizedTenantName,
+                    'responsibleName': normalizedResponsibleName,
+                  });
+                },
+                child: const Text('Guardar'),
+              ),
+            ],
+          );
+        },
+      );
+      if (input == null) {
+        return;
+      }
+      await sessionController.updatePrincipalTenantIdentity(
+        tenantName: input['tenantName'] ?? '',
+        responsibleName: input['responsibleName'] ?? '',
+      );
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Datos actualizados.')),
+        );
+      }
+    } catch (error) {
+      if (!context.mounted) {
+        return;
+      }
+      final message = error is StateError
+          ? error.message
+          : 'No se pudo guardar: $error';
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(message)),
+      );
+    }
+  }
+
+  Future<void> _openSettingsMenu(
+    BuildContext context, {
+    required AppSession? session,
+  }) async {
+    final canEditTenantIdentity = _isPrincipalTenantUser(session);
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                ListTile(
+                  leading: const Icon(Icons.palette_outlined),
+                  title: const Text('Apariencia'),
+                  subtitle: const Text('Elegir modo claro u oscuro'),
+                  onTap: () => Navigator.of(sheetContext).pop('theme'),
+                ),
+                if (canEditTenantIdentity)
+                  ListTile(
+                    leading: const Icon(Icons.business_outlined),
+                    title: const Text('Empresa y responsable'),
+                    subtitle: const Text(
+                      'Editar nombre de empresa y responsable',
+                    ),
+                    onTap: () =>
+                        Navigator.of(sheetContext).pop('tenant_identity'),
+                  ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+    if (!context.mounted) {
+      return;
+    }
+
+    if (action == 'theme') {
+      await _openThemeSettings(context);
+      return;
+    }
+    if (action == 'tenant_identity' && session != null) {
+      await _openPrincipalIdentitySettings(context, session: session);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
@@ -1264,9 +1732,9 @@ class _ModuleHomeScreen extends StatelessWidget {
         title: Text(appBarTitle),
         actions: [
           IconButton(
-            onPressed: () => _openThemeSettings(context),
+            onPressed: () => _openSettingsMenu(context, session: session),
             icon: const Icon(Icons.settings_outlined),
-            tooltip: 'Configuracion de tema',
+            tooltip: 'Configuracion',
           ),
           IconButton(
             onPressed: sessionController.signOut,
@@ -1631,15 +2099,16 @@ class _TenantBlockedSupportScreenState
                         spacing: 10,
                         runSpacing: 10,
                         children: [
-                          FilledButton.icon(
-                            onPressed: supportContext.canContactSystemAdmin
-                                ? () => _openWhatsApp(context)
-                                : null,
-                            icon: const Icon(Icons.message_outlined),
-                            label: const Text(
-                              'Enviar WhatsApp al Administrador del sistema',
+                          if (!supportContext.canRequestActivation)
+                            FilledButton.icon(
+                              onPressed: supportContext.canContactSystemAdmin
+                                  ? () => _openWhatsApp(context)
+                                  : null,
+                              icon: const Icon(Icons.message_outlined),
+                              label: const Text(
+                                'Enviar WhatsApp al Administrador del sistema',
+                              ),
                             ),
-                          ),
                           OutlinedButton.icon(
                             onPressed: sessionController.signOut,
                             icon: const Icon(Icons.logout),
@@ -1730,7 +2199,7 @@ class _TenantBlockedSupportScreenState
                           label: Text(
                             _submittingRequest
                                 ? 'Enviando...'
-                                : 'Solicitar activacion',
+                                : 'Solicitar activacion por WhatsApp',
                           ),
                         ),
                       ],

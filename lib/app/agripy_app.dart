@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 
@@ -23,6 +24,7 @@ class _AgripyAppState extends State<AgripyApp> {
   late final ThemeData _lightTheme;
   late final ThemeData _darkTheme;
   String? _lastThemeUid;
+  bool _hasSyncedThemeAtLeastOnce = false;
 
   @override
   void initState() {
@@ -42,10 +44,11 @@ class _AgripyAppState extends State<AgripyApp> {
 
   void _syncThemeForCurrentUser() {
     final uid = _sessionController.currentUser?.uid;
-    if (_lastThemeUid == uid) {
+    if (_hasSyncedThemeAtLeastOnce && _lastThemeUid == uid) {
       return;
     }
     _lastThemeUid = uid;
+    _hasSyncedThemeAtLeastOnce = true;
     unawaited(_themeController.syncForUser(uid));
   }
 
@@ -79,6 +82,7 @@ class _AgripyAppState extends State<AgripyApp> {
 
     return ThemeData(
       useMaterial3: true,
+      splashFactory: kIsWeb ? NoSplash.splashFactory : InkRipple.splashFactory,
       colorScheme: scheme,
       scaffoldBackgroundColor: scheme.surface,
       appBarTheme: AppBarTheme(
