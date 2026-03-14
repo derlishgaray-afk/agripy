@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../../app/router.dart';
 import '../../../shared/widgets/responsive_page.dart';
 import '../data/super_admin_repo.dart';
 
@@ -264,6 +265,20 @@ class _SuperAdminSettingsScreenState extends State<SuperAdminSettingsScreen> {
                           ],
                         ),
                       ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Card(
+                    child: ListTile(
+                      leading: const Icon(Icons.inventory_2_outlined),
+                      title: const Text('Catalogos de Productos'),
+                      subtitle: const Text(
+                        'Administrar productos base para registro',
+                      ),
+                      trailing: const Icon(Icons.chevron_right),
+                      onTap: () => Navigator.of(
+                        context,
+                      ).pushNamed(AppRoutes.superAdminProductCatalog),
                     ),
                   ),
                 ],

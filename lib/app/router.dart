@@ -22,6 +22,7 @@ import '../features/recetario_agronomico/presentation/reports_hub_screen.dart';
 import '../features/recetario_agronomico/presentation/recetario_home_screen.dart';
 import '../features/recetario_agronomico/presentation/recipe_form_screen.dart';
 import '../features/recetario_agronomico/presentation/recipes_list_screen.dart';
+import '../features/product_catalog/presentation/super_admin_product_catalog_screen.dart';
 import '../features/super_admin/domain/models.dart';
 import '../features/super_admin/presentation/super_admin_home_screen.dart';
 import '../features/super_admin/presentation/super_admin_settings_screen.dart';
@@ -50,6 +51,7 @@ class AppRoutes {
 
   static const String superAdminHome = '/super-admin';
   static const String superAdminSettings = '/super-admin/settings';
+  static const String superAdminProductCatalog = '/super-admin/product-catalog';
   static const String superAdminTenants = '/super-admin/tenants';
   static const String superAdminTenantForm = '/super-admin/tenant-form';
   static const String superAdminTenantDetail = '/super-admin/tenant-detail';
@@ -1239,6 +1241,12 @@ class AppRouter {
           settings: settings,
           builder: (adminProfile) =>
               SuperAdminSettingsScreen(adminUid: adminProfile.uid),
+        );
+      case AppRoutes.superAdminProductCatalog:
+        return _superAdminGuardRoute(
+          settings: settings,
+          builder: (adminProfile) =>
+              SuperAdminProductCatalogScreen(adminUid: adminProfile.uid),
         );
       case AppRoutes.superAdminTenants:
         return _superAdminGuardRoute(

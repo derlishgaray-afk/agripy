@@ -7,6 +7,18 @@ import '../../../core/services/access_controller.dart';
 import '../../../core/services/tenant_path.dart';
 import '../domain/catalog_models.dart';
 
+class DuplicateSupplyException implements Exception {
+  DuplicateSupplyException({required this.commercialName});
+
+  final String commercialName;
+
+  String get userMessage =>
+      'Ya existe un insumo con el mismo nombre comercial, unidad, tipo y formulacion.';
+
+  @override
+  String toString() => userMessage;
+}
+
 class RecetarioCatalogRepo {
   RecetarioCatalogRepo({
     required FirebaseFirestore firestore,
@@ -178,6 +190,7 @@ class RecetarioCatalogRepo {
 
   Future<void> createSupply(SupplyRegistryItem item) async {
     _assertWriteAccess();
+    await _assertSupplyNotDuplicated(item);
     final doc = TenantPath.inputsRef(_firestore, tenantId).doc();
     await doc.set({
       ...item.toMap(),
@@ -192,11 +205,71 @@ class RecetarioCatalogRepo {
     if (id == null || id.isEmpty) {
       throw StateError('Insumo sin id.');
     }
+    await _assertSupplyNotDuplicated(item, excludeId: id);
     await TenantPath.inputRef(_firestore, tenantId, id).update({
       ...item.toMap(),
       'updatedBy': currentUid,
       'updatedAt': Timestamp.now(),
     });
+  }
+
+  Future<void> _assertSupplyNotDuplicated(
+    SupplyRegistryItem item, {
+    String? excludeId,
+  }) async {
+    final normalizedTargetKey = _supplyDuplicateKey(item);
+    final normalizedExcludeId = (excludeId ?? '').trim();
+    final snapshot = await TenantPath.inputsRef(_firestore, tenantId).get();
+    for (final doc in snapshot.docs) {
+      if (normalizedExcludeId.isNotEmpty && doc.id == normalizedExcludeId) {
+        continue;
+      }
+      final existing = SupplyRegistryItem.fromMap(doc.data(), id: doc.id);
+      if (_supplyDuplicateKey(existing) == normalizedTargetKey) {
+        throw DuplicateSupplyException(commercialName: existing.commercialName);
+      }
+    }
+  }
+
+  String _supplyDuplicateKey(SupplyRegistryItem item) {
+    final normalizedCommercialName = item.commercialName
+        .trim()
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .toUpperCase();
+    final normalizedUnit = _normalizeUnit(item.unit);
+    final normalizedType = item.type
+        .trim()
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .toLowerCase();
+    final normalizedFormulation = item.formulation
+        .trim()
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .toLowerCase();
+    return [
+      normalizedCommercialName,
+      normalizedUnit,
+      normalizedType,
+      normalizedFormulation,
+    ].join('|');
+  }
+
+  String _normalizeUnit(String value) {
+    final raw = value
+        .trim()
+        .replaceAll(RegExp(r'\s+'), '')
+        .replaceAll('.', '')
+        .toLowerCase();
+    if (raw == 'kg' ||
+        raw == 'kilo' ||
+        raw == 'kilos' ||
+        raw == 'kilogramo' ||
+        raw == 'kilogramos') {
+      return 'kg';
+    }
+    if (raw == 'lt' || raw == 'l' || raw == 'litro' || raw == 'litros') {
+      return 'lt';
+    }
+    return raw;
   }
 
   Future<void> deleteSupply(String id) async {

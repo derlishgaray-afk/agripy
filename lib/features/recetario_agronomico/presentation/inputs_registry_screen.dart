@@ -1,7 +1,11 @@
+import 'dart:async';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
 import '../../../app/router.dart';
+import '../../product_catalog/data/product_catalog_repo.dart';
+import '../../product_catalog/domain/product_catalog_models.dart';
 import '../../../shared/widgets/responsive_page.dart';
 import '../data/catalog_repo.dart';
 import '../domain/catalog_models.dart';
@@ -17,6 +21,9 @@ class InputsRegistryScreen extends StatefulWidget {
 
 class _InputsRegistryScreenState extends State<InputsRegistryScreen> {
   late final RecetarioCatalogRepo _repo;
+  late final MasterProductCatalogRepo _masterCatalogRepo;
+  StreamSubscription<List<MasterProductCatalogItem>>? _masterCatalogSub;
+  List<MasterProductCatalogItem> _masterProducts = const [];
   final TextEditingController _searchController = TextEditingController();
   String _searchQuery = '';
   static const List<String> _supplyTypeOptions = <String>[
@@ -27,20 +34,8 @@ class _InputsRegistryScreenState extends State<InputsRegistryScreen> {
     'fertilizante',
     'Otros',
   ];
-  static const List<String> _formulationOptions = <String>[
-    'WP',
-    'WG',
-    'SC',
-    'SE',
-    'OD',
-    'EC',
-    'EW',
-    'SL',
-    'SP',
-    'Coadyuvante',
-    'Aceite',
-    'Otro',
-  ];
+  static const List<String> _formulationOptions =
+      productCatalogFormulationOptions;
   static const List<String> _functionOptions = <String>[
     'ninguna',
     'corrector_ph',
@@ -80,6 +75,17 @@ class _InputsRegistryScreenState extends State<InputsRegistryScreen> {
     return 'Otro';
   }
 
+  String? _normalizeUnitForForm(String? value) {
+    final raw = (value ?? '').trim().toLowerCase();
+    if (raw == 'kg' || raw == 'kg.') {
+      return 'Kg.';
+    }
+    if (raw == 'lt' || raw == 'lt.' || raw == 'l' || raw == 'l.') {
+      return 'Lt.';
+    }
+    return null;
+  }
+
   String _normalizeFunction(String? value) {
     final raw = (value ?? '').trim().toLowerCase();
     for (final option in _functionOptions) {
@@ -99,6 +105,17 @@ class _InputsRegistryScreenState extends State<InputsRegistryScreen> {
       currentUid: widget.session.uid,
       access: widget.session.access,
     );
+    _masterCatalogRepo = MasterProductCatalogRepo(FirebaseFirestore.instance);
+    _masterCatalogSub = _masterCatalogRepo.watchActiveProducts().listen((
+      items,
+    ) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _masterProducts = items;
+      });
+    });
   }
 
   Future<void> _showSupplyDialog({SupplyRegistryItem? existing}) async {
@@ -108,7 +125,7 @@ class _InputsRegistryScreenState extends State<InputsRegistryScreen> {
     final activeController = TextEditingController(
       text: existing?.activeIngredient ?? '',
     );
-    var unit = existing?.unit == 'Kg.' ? 'Kg.' : 'Lt.';
+    String? unit = _normalizeUnitForForm(existing?.unit);
     var type = _normalizeSupplyType(existing?.type);
     var formulation = _normalizeFormulation(existing?.formulation);
     var funcion = _normalizeFunction(existing?.funcion);
@@ -119,6 +136,7 @@ class _InputsRegistryScreenState extends State<InputsRegistryScreen> {
 
     await showDialog<void>(
       context: context,
+      barrierDismissible: false,
       builder: (context) {
         return StatefulBuilder(
           builder: (context, setModalState) {
@@ -128,6 +146,41 @@ class _InputsRegistryScreenState extends State<InputsRegistryScreen> {
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
+                    if (_masterProducts.isNotEmpty) ...[
+                      SizedBox(
+                        width: double.infinity,
+                        child: OutlinedButton.icon(
+                          onPressed: () async {
+                            final selected = await _selectMasterCatalogProduct(
+                              context,
+                            );
+                            if (!context.mounted) {
+                              return;
+                            }
+                            if (selected == null) {
+                              return;
+                            }
+                            setModalState(() {
+                              nameController.text = selected.commercialName;
+                              activeController.text =
+                                  selected.activeIngredient ?? '';
+                              unit = _normalizeUnitForForm(selected.unit);
+                              type = _normalizeSupplyType(selected.type);
+                              formulation = _normalizeFormulation(
+                                selected.formulation,
+                              );
+                              funcion = _normalizeFunction(selected.funcion);
+                              if (type != 'coadyuvante') {
+                                funcion = 'ninguna';
+                              }
+                            });
+                          },
+                          icon: const Icon(Icons.search),
+                          label: const Text('Seleccionar desde catalogo'),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                    ],
                     TextField(
                       controller: nameController,
                       decoration: const InputDecoration(
@@ -146,6 +199,7 @@ class _InputsRegistryScreenState extends State<InputsRegistryScreen> {
                     const SizedBox(height: 12),
                     DropdownButtonFormField<String>(
                       initialValue: unit,
+                      hint: const Text('Seleccionar unidad'),
                       decoration: const InputDecoration(
                         labelText: 'Unidad',
                         border: OutlineInputBorder(),
@@ -156,7 +210,7 @@ class _InputsRegistryScreenState extends State<InputsRegistryScreen> {
                       ],
                       onChanged: (value) {
                         setModalState(() {
-                          unit = value ?? 'Lt.';
+                          unit = value;
                         });
                       },
                     ),
@@ -243,13 +297,18 @@ class _InputsRegistryScreenState extends State<InputsRegistryScreen> {
                       _showSnack('El nombre comercial es obligatorio.');
                       return;
                     }
+                    final resolvedUnit = _normalizeUnitForForm(unit);
+                    if (resolvedUnit == null) {
+                      _showSnack('La unidad es obligatoria.');
+                      return;
+                    }
                     final item = SupplyRegistryItem(
                       id: existing?.id,
                       commercialName: name,
                       activeIngredient: activeController.text.trim().isEmpty
                           ? null
                           : activeController.text.trim(),
-                      unit: unit,
+                      unit: resolvedUnit,
                       type: _normalizeSupplyType(type),
                       formulation: _normalizeFormulation(formulation),
                       funcion: _normalizeSupplyType(type) == 'coadyuvante'
@@ -266,6 +325,8 @@ class _InputsRegistryScreenState extends State<InputsRegistryScreen> {
                         return;
                       }
                       Navigator.of(context).pop();
+                    } on DuplicateSupplyException catch (error) {
+                      _showSnack(error.userMessage);
                     } catch (error) {
                       _showSnack('No se pudo guardar el insumo: $error');
                     }
@@ -281,6 +342,95 @@ class _InputsRegistryScreenState extends State<InputsRegistryScreen> {
 
     nameController.dispose();
     activeController.dispose();
+  }
+
+  Future<MasterProductCatalogItem?> _selectMasterCatalogProduct(
+    BuildContext parentDialogContext,
+  ) async {
+    if (_masterProducts.isEmpty) {
+      return null;
+    }
+    return showDialog<MasterProductCatalogItem>(
+      context: parentDialogContext,
+      useRootNavigator: false,
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        var query = '';
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            final normalizedQuery = query.trim().toLowerCase();
+            final visibleItems = _masterProducts
+                .where((item) {
+                  if (normalizedQuery.isEmpty) {
+                    return true;
+                  }
+                  return item.commercialName.toLowerCase().contains(
+                        normalizedQuery,
+                      ) ||
+                      (item.activeIngredient ?? '').toLowerCase().contains(
+                        normalizedQuery,
+                      ) ||
+                      item.type.toLowerCase().contains(normalizedQuery);
+                })
+                .toList(growable: false);
+
+            return AlertDialog(
+              title: const Text('Catalogo maestro de productos'),
+              content: SizedBox(
+                width: 560,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    TextField(
+                      decoration: const InputDecoration(
+                        hintText: 'Buscar producto',
+                        prefixIcon: Icon(Icons.search),
+                        border: OutlineInputBorder(),
+                      ),
+                      onChanged: (value) {
+                        setDialogState(() {
+                          query = value;
+                        });
+                      },
+                    ),
+                    const SizedBox(height: 10),
+                    Flexible(
+                      child: visibleItems.isEmpty
+                          ? const Center(
+                              child: Text('No se encontraron productos.'),
+                            )
+                          : ListView.separated(
+                              shrinkWrap: true,
+                              itemCount: visibleItems.length,
+                              separatorBuilder: (context, index) =>
+                                  const SizedBox(height: 6),
+                              itemBuilder: (context, index) {
+                                final item = visibleItems[index];
+                                return ListTile(
+                                  title: Text(item.commercialName),
+                                  subtitle: Text(
+                                    'PA: ${item.activeIngredient ?? '-'} | ${item.unit} | ${item.type}',
+                                  ),
+                                  onTap: () =>
+                                      Navigator.of(dialogContext).pop(item),
+                                );
+                              },
+                            ),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(dialogContext).pop(),
+                  child: const Text('Cancelar'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
   }
 
   Future<void> _deleteSupply(SupplyRegistryItem item) async {
@@ -328,6 +478,7 @@ class _InputsRegistryScreenState extends State<InputsRegistryScreen> {
 
   @override
   void dispose() {
+    _masterCatalogSub?.cancel();
     _searchController.dispose();
     super.dispose();
   }

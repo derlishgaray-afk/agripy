@@ -25,7 +25,15 @@ class MixValidationResult {
 class MixValidationService {
   const MixValidationService();
 
-  static const Set<String> _solidFormulations = <String>{'wp', 'wg', 'sp'};
+  static const Set<String> _solidFormulations = <String>{
+    'wp',
+    'wg',
+    'sp',
+    'gr',
+    'sg',
+    'dt',
+    'rb',
+  };
   static const Set<String> _waterConditioningFunctions = <String>{
     'corrector_ph',
     'secuestrante_dureza',

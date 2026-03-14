@@ -202,6 +202,11 @@ service cloud.firestore {
       allow delete: if isSuperAdmin();
     }
 
+    match /master_product_catalog/{productId} {
+      allow read: if isSignedIn();
+      allow create, update, delete: if isSuperAdmin();
+    }
+
     match /user_tenant/{userId} {
       allow read: if isSuperAdmin() || (isSignedIn() && userId == uid());
       allow create: if isSuperAdmin() ||

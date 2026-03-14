@@ -336,10 +336,17 @@ class _RecipeFormScreenState extends State<RecipeFormScreen> {
       case 'sp':
         return 1;
       case 'wg':
+      case 'gr':
+      case 'sg':
+      case 'dt':
+      case 'rb':
         return 2;
       case 'sc':
       case 'se':
       case 'od':
+      case 'cs':
+      case 'me':
+      case 'fs':
         return 3;
       case 'ec':
       case 'ew':
