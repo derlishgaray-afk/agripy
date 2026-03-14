@@ -23,12 +23,10 @@ import '../features/recetario_agronomico/presentation/recetario_home_screen.dart
 import '../features/recetario_agronomico/presentation/recipe_form_screen.dart';
 import '../features/recetario_agronomico/presentation/recipes_list_screen.dart';
 import '../features/super_admin/domain/models.dart';
-import '../features/super_admin/presentation/onboarding_claim_screen.dart';
 import '../features/super_admin/presentation/super_admin_home_screen.dart';
 import '../features/super_admin/presentation/super_admin_settings_screen.dart';
 import '../features/super_admin/presentation/tenant_detail_screen.dart';
 import '../features/super_admin/presentation/tenant_form_screen.dart';
-import '../features/super_admin/presentation/tenant_invite_form_screen.dart';
 import '../features/super_admin/presentation/tenant_user_form_screen.dart';
 import '../features/super_admin/presentation/tenant_users_screen.dart';
 import '../features/super_admin/presentation/tenants_list_screen.dart';
@@ -58,8 +56,6 @@ class AppRoutes {
   static const String superAdminTenantUsers = '/super-admin/tenant-users';
   static const String superAdminTenantUserForm =
       '/super-admin/tenant-user-form';
-  static const String superAdminTenantInviteForm =
-      '/super-admin/tenant-invite-form';
 }
 
 class AppSession {
@@ -187,7 +183,6 @@ class SessionController extends ChangeNotifier {
   String? blockingMessage;
   TenantBlockingSupportContext? tenantBlockingSupportContext;
   String? warningMessage;
-  bool needsOnboarding = false;
 
   bool get isAuthenticated => currentUser != null;
 
@@ -334,7 +329,6 @@ class SessionController extends ChangeNotifier {
     blockingMessage = null;
     tenantBlockingSupportContext = null;
     warningMessage = null;
-    needsOnboarding = false;
   }
 
   String _resolveTenantName(
@@ -477,32 +471,28 @@ class SessionController extends ChangeNotifier {
     _watchedUid = uid;
 
     var skipTenantInitial = true;
-    _tenantSub = TenantPath.tenantRef(_firestore, tenantId).snapshots().listen(
-      (_) {
-        if (skipTenantInitial) {
-          skipTenantInitial = false;
-          return;
-        }
-        unawaited(_refreshSessionFromTenantWatch(tenantId: tenantId, uid: uid));
-      },
-      onError: (_) {},
-    );
+    _tenantSub = TenantPath.tenantRef(_firestore, tenantId).snapshots().listen((
+      _,
+    ) {
+      if (skipTenantInitial) {
+        skipTenantInitial = false;
+        return;
+      }
+      unawaited(_refreshSessionFromTenantWatch(tenantId: tenantId, uid: uid));
+    }, onError: (_) {});
 
     var skipTenantUserInitial = true;
-    _tenantUserSub = TenantPath.tenantUserRef(
-      _firestore,
-      tenantId,
-      uid,
-    ).snapshots().listen(
-      (_) {
-        if (skipTenantUserInitial) {
-          skipTenantUserInitial = false;
-          return;
-        }
-        unawaited(_refreshSessionFromTenantWatch(tenantId: tenantId, uid: uid));
-      },
-      onError: (_) {},
-    );
+    _tenantUserSub = TenantPath.tenantUserRef(_firestore, tenantId, uid)
+        .snapshots()
+        .listen((_) {
+          if (skipTenantUserInitial) {
+            skipTenantUserInitial = false;
+            return;
+          }
+          unawaited(
+            _refreshSessionFromTenantWatch(tenantId: tenantId, uid: uid),
+          );
+        }, onError: (_) {});
   }
 
   Future<void> _refreshSessionFromTenantWatch({
@@ -522,11 +512,17 @@ class SessionController extends ChangeNotifier {
     _refreshingFromTenantWatch = true;
     try {
       try {
-        final access = await _accessController.loadTenantUserAccess(tenantId, uid);
+        final access = await _accessController.loadTenantUserAccess(
+          tenantId,
+          uid,
+        );
         if (!access.isActive) {
           throw StateError('Usuario bloqueado en la empresa actual.');
         }
-        final tenantDoc = await TenantPath.tenantRef(_firestore, tenantId).get();
+        final tenantDoc = await TenantPath.tenantRef(
+          _firestore,
+          tenantId,
+        ).get();
         final tenantName = _resolveTenantName(tenantDoc.data(), tenantId);
         final isPrincipalUser = _isPrincipalUidForTenant(
           uid: uid,
@@ -546,7 +542,11 @@ class SessionController extends ChangeNotifier {
         if (isSuperAdmin) {
           warningMessage = _tenantBlockedMessage(error);
         } else {
-          await _handleTenantBlocked(tenantId: tenantId, user: user, error: error);
+          await _handleTenantBlocked(
+            tenantId: tenantId,
+            user: user,
+            error: error,
+          );
           session = null;
         }
       } catch (error) {
@@ -665,10 +665,7 @@ class SessionController extends ChangeNotifier {
     required String uid,
   }) async {
     try {
-      final snapshot = await TenantPath.tenantRef(
-        _firestore,
-        tenantId,
-      ).get();
+      final snapshot = await TenantPath.tenantRef(_firestore, tenantId).get();
       return _isPrincipalUidForTenant(
         uid: uid,
         tenantId: tenantId,
@@ -956,11 +953,15 @@ class SessionController extends ChangeNotifier {
       'updatedAt': now,
       'updatedBy': user.uid,
     });
-    batch.set(TenantPath.tenantUserRef(_firestore, tenantId, user.uid), {
-      'displayName': normalizedResponsibleName,
-      'updatedAt': now,
-      'updatedBy': user.uid,
-    }, SetOptions(merge: true));
+    batch.set(
+      TenantPath.tenantUserRef(_firestore, tenantId, user.uid),
+      {
+        'displayName': normalizedResponsibleName,
+        'updatedAt': now,
+        'updatedBy': user.uid,
+      },
+      SetOptions(merge: true),
+    );
     batch.set(_firestore.collection('user_tenant').doc(user.uid), {
       'displayName': normalizedResponsibleName,
       'updatedAt': now,
@@ -986,16 +987,6 @@ class SessionController extends ChangeNotifier {
     required String password,
   }) async {
     await _auth.signInWithEmailAndPassword(email: email, password: password);
-  }
-
-  Future<void> registerWithEmailPassword({
-    required String email,
-    required String password,
-  }) async {
-    await _auth.createUserWithEmailAndPassword(
-      email: email,
-      password: password,
-    );
   }
 
   Future<void> signInWithGoogle() async {
@@ -1307,19 +1298,6 @@ class AppRouter {
             return TenantUserFormScreen(args: arg);
           },
         );
-      case AppRoutes.superAdminTenantInviteForm:
-        return _superAdminGuardRoute(
-          settings: settings,
-          builder: (_) {
-            final arg = settings.arguments;
-            if (arg is! TenantInviteFormArgs) {
-              return const _RouteErrorScreen(
-                message: 'Argumento inválido para tenant invite form.',
-              );
-            }
-            return TenantInviteFormScreen(args: arg);
-          },
-        );
       default:
         return MaterialPageRoute<void>(
           settings: settings,
@@ -1409,16 +1387,6 @@ class _RootScreen extends StatelessWidget {
 
     if (!sessionController.isAuthenticated) {
       return LoginScreen(sessionController: sessionController);
-    }
-
-    if (sessionController.needsOnboarding &&
-        !sessionController.isSuperAdmin &&
-        sessionController.currentUser != null) {
-      return OnboardingClaimScreen(
-        uid: sessionController.currentUser!.uid,
-        onClaimed: sessionController.refreshSession,
-        onSignOut: sessionController.signOut,
-      );
     }
 
     if (sessionController.blockingMessage != null &&
@@ -1601,9 +1569,9 @@ class _ModuleHomeScreen extends StatelessWidget {
         responsibleName: input['responsibleName'] ?? '',
       );
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Datos actualizados.')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Datos actualizados.')));
       }
     } catch (error) {
       if (!context.mounted) {
@@ -1612,9 +1580,9 @@ class _ModuleHomeScreen extends StatelessWidget {
       final message = error is StateError
           ? error.message
           : 'No se pudo guardar: $error';
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(message)),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(message)));
     }
   }
 
@@ -2237,7 +2205,7 @@ class _LoginScreenState extends State<LoginScreen> {
     super.dispose();
   }
 
-  Future<void> _submit({required bool createAccount}) async {
+  Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) {
       return;
     }
@@ -2247,24 +2215,17 @@ class _LoginScreenState extends State<LoginScreen> {
     });
 
     try {
-      if (createAccount) {
-        await widget.sessionController.registerWithEmailPassword(
-          email: _emailController.text.trim(),
-          password: _passwordController.text.trim(),
-        );
-      } else {
-        await widget.sessionController.signInWithEmailPassword(
-          email: _emailController.text.trim(),
-          password: _passwordController.text.trim(),
-        );
-      }
+      await widget.sessionController.signInWithEmailPassword(
+        email: _emailController.text.trim(),
+        password: _passwordController.text.trim(),
+      );
     } catch (error) {
       if (!mounted) {
         return;
       }
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(_friendlyAuthError(error, createAccount))),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(_friendlyAuthError(error))));
     } finally {
       if (mounted) {
         setState(() {
@@ -2358,7 +2319,7 @@ class _LoginScreenState extends State<LoginScreen> {
       }
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(SnackBar(content: Text(_friendlyAuthError(error, false))));
+      ).showSnackBar(SnackBar(content: Text(_friendlyAuthError(error))));
     } finally {
       if (mounted) {
         setState(() {
@@ -2381,7 +2342,7 @@ class _LoginScreenState extends State<LoginScreen> {
       }
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(SnackBar(content: Text(_friendlyAuthError(error, false))));
+      ).showSnackBar(SnackBar(content: Text(_friendlyAuthError(error))));
     } finally {
       if (mounted) {
         setState(() {
@@ -2391,7 +2352,7 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   }
 
-  String _friendlyAuthError(Object error, bool createAccount) {
+  String _friendlyAuthError(Object error) {
     if (error is FirebaseAuthException) {
       switch (error.code) {
         case 'email-already-in-use':
@@ -2401,9 +2362,7 @@ class _LoginScreenState extends State<LoginScreen> {
         case 'weak-password':
           return 'Contrasena debil. Minimo 6 caracteres.';
         case 'user-not-found':
-          return createAccount
-              ? 'No se pudo crear la cuenta.'
-              : 'No existe una cuenta con ese email. Usa "Crear cuenta".';
+          return 'No existe una cuenta con ese email.';
         case 'wrong-password':
         case 'invalid-credential':
           return 'Email o contrasena incorrectos.';
@@ -2524,9 +2483,7 @@ class _LoginScreenState extends State<LoginScreen> {
                   SizedBox(
                     width: double.infinity,
                     child: FilledButton(
-                      onPressed: _loading
-                          ? null
-                          : () => _submit(createAccount: false),
+                      onPressed: _loading ? null : _submit,
                       child: const Text('Ingresar'),
                     ),
                   ),

@@ -161,36 +161,6 @@ String accountStatusToString(AccountStatus value) {
   }
 }
 
-enum InviteStatus { pending, claimed, revoked, expired }
-
-InviteStatus inviteStatusFromString(String raw) {
-  switch (raw.trim().toLowerCase()) {
-    case 'pending':
-      return InviteStatus.pending;
-    case 'claimed':
-      return InviteStatus.claimed;
-    case 'revoked':
-      return InviteStatus.revoked;
-    case 'expired':
-      return InviteStatus.expired;
-    default:
-      return InviteStatus.pending;
-  }
-}
-
-String inviteStatusToString(InviteStatus value) {
-  switch (value) {
-    case InviteStatus.pending:
-      return 'pending';
-    case InviteStatus.claimed:
-      return 'claimed';
-    case InviteStatus.revoked:
-      return 'revoked';
-    case InviteStatus.expired:
-      return 'expired';
-  }
-}
-
 class SuperAdminProfile {
   const SuperAdminProfile({
     required this.uid,
@@ -558,90 +528,6 @@ class UserTenantLink {
   }
 }
 
-class TenantInviteModel {
-  const TenantInviteModel({
-    this.id,
-    required this.tenantId,
-    required this.email,
-    required this.displayName,
-    required this.role,
-    required this.status,
-    required this.activeModules,
-    required this.inviteCode,
-    required this.createdAt,
-    required this.createdBy,
-    this.expiresAt,
-    this.claimedByUid,
-    this.claimedAt,
-  });
-
-  final String? id;
-  final String tenantId;
-  final String email;
-  final String displayName;
-  final TenantUserRole role;
-  final AccountStatus status;
-  final List<String> activeModules;
-  final String inviteCode;
-  final DateTime createdAt;
-  final String createdBy;
-  final DateTime? expiresAt;
-  final String? claimedByUid;
-  final DateTime? claimedAt;
-
-  bool get isPending => claimedAt == null;
-
-  Map<String, dynamic> toMap() {
-    return {
-      'tenantId': tenantId,
-      'email': email,
-      'emailLower': email.trim().toLowerCase(),
-      'displayName': displayName,
-      'role': tenantUserRoleToString(role),
-      'status': accountStatusToString(status),
-      'activeModules': activeModules,
-      'inviteCode': inviteCode.toUpperCase(),
-      'createdAt': Timestamp.fromDate(createdAt),
-      'createdBy': createdBy,
-      'expiresAt': expiresAt == null ? null : Timestamp.fromDate(expiresAt!),
-      'claimedByUid': claimedByUid,
-      'claimedAt': claimedAt == null ? null : Timestamp.fromDate(claimedAt!),
-    };
-  }
-
-  factory TenantInviteModel.fromMap(Map<String, dynamic> map, {String? id}) {
-    final modulesRaw = map['activeModules'];
-    final modules = <String>[];
-    if (modulesRaw is List) {
-      for (final item in modulesRaw) {
-        if (item is String && item.trim().isNotEmpty) {
-          modules.add(item.trim());
-        }
-      }
-    }
-
-    return TenantInviteModel(
-      id: id,
-      tenantId: (map['tenantId'] as String? ?? '').trim(),
-      email: (map['email'] as String? ?? '').trim(),
-      displayName: (map['displayName'] as String? ?? '').trim(),
-      role: tenantUserRoleFromString((map['role'] as String? ?? 'operator')),
-      status: accountStatusFromString((map['status'] as String? ?? 'active')),
-      activeModules: List.unmodifiable(modules),
-      inviteCode: (map['inviteCode'] as String? ?? '').trim().toUpperCase(),
-      createdAt: _parseDateTime(map['createdAt']),
-      createdBy: (map['createdBy'] as String? ?? '').trim(),
-      expiresAt: map['expiresAt'] == null
-          ? null
-          : _parseDateTime(map['expiresAt']),
-      claimedByUid: (map['claimedByUid'] as String?)?.trim(),
-      claimedAt: map['claimedAt'] == null
-          ? null
-          : _parseDateTime(map['claimedAt']),
-    );
-  }
-}
-
 class TenantFormArgs {
   const TenantFormArgs({required this.actorUid, this.tenant});
 
@@ -673,11 +559,4 @@ class TenantUserFormArgs {
   final String tenantId;
   final String actorUid;
   final String? uid;
-}
-
-class TenantInviteFormArgs {
-  const TenantInviteFormArgs({required this.tenantId, required this.actorUid});
-
-  final String tenantId;
-  final String actorUid;
 }

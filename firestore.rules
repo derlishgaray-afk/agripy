@@ -145,73 +145,6 @@ service cloud.firestore {
         ]);
     }
 
-    function hasOnboardingInviteCodeInRequest() {
-      return ('onboardingInviteCode' in request.resource.data) &&
-        (request.resource.data.onboardingInviteCode is string);
-    }
-
-    function inviteExists(inviteCode) {
-      return inviteCode is string &&
-        exists(/databases/$(database)/documents/tenant_user_invites/$(inviteCode));
-    }
-
-    function invite(inviteCode) {
-      return get(/databases/$(database)/documents/tenant_user_invites/$(inviteCode)).data;
-    }
-
-    function inviteAfter(inviteCode) {
-      return getAfter(/databases/$(database)/documents/tenant_user_invites/$(inviteCode)).data;
-    }
-
-    function inviteBelongsToAuth(inviteCode) {
-      return inviteExists(inviteCode) &&
-        authEmail() != '' &&
-        (invite(inviteCode).emailLower == authEmail() || invite(inviteCode).email == authEmail());
-    }
-
-    function inviteIsNotExpired(inviteCode) {
-      return !('expiresAt' in invite(inviteCode)) ||
-        invite(inviteCode).expiresAt == null ||
-        invite(inviteCode).expiresAt > request.time;
-    }
-
-    function inviteReadableByUser(inviteCode) {
-      return inviteBelongsToAuth(inviteCode) &&
-        invite(inviteCode).inviteState == 'pending' &&
-        inviteIsNotExpired(inviteCode);
-    }
-
-    function canClaimInvite(inviteCode) {
-      return inviteReadableByUser(inviteCode) &&
-        request.resource.data.inviteState == 'claimed' &&
-        request.resource.data.claimedByUid == uid() &&
-        request.resource.data.inviteCode == invite(inviteCode).inviteCode &&
-        request.resource.data.tenantId == invite(inviteCode).tenantId &&
-        request.resource.data.emailLower == invite(inviteCode).emailLower &&
-        request.resource.data.role == invite(inviteCode).role &&
-        request.resource.data.status == invite(inviteCode).status &&
-        request.resource.data.activeModules == invite(inviteCode).activeModules &&
-        request.resource.data.displayName == invite(inviteCode).displayName;
-    }
-
-    function inviteClaimMatchesRequest(inviteCode, tenantId) {
-      return inviteExists(inviteCode) &&
-        authEmail() != '' &&
-        inviteAfter(inviteCode).inviteState == 'claimed' &&
-        inviteAfter(inviteCode).claimedByUid == uid() &&
-        inviteAfter(inviteCode).tenantId == tenantId &&
-        (inviteAfter(inviteCode).emailLower == authEmail() || inviteAfter(inviteCode).email == authEmail());
-    }
-
-    function inviteClaimMatchesTenantUserRequest(tenantId) {
-      return hasOnboardingInviteCodeInRequest() &&
-        inviteClaimMatchesRequest(request.resource.data.onboardingInviteCode, tenantId) &&
-        request.resource.data.role == inviteAfter(request.resource.data.onboardingInviteCode).role &&
-        request.resource.data.status == inviteAfter(request.resource.data.onboardingInviteCode).status &&
-        request.resource.data.activeModules == inviteAfter(request.resource.data.onboardingInviteCode).activeModules &&
-        request.resource.data.displayName == inviteAfter(request.resource.data.onboardingInviteCode).displayName;
-    }
-
     function authEmailIndexTenantIdIsValid() {
       return !('tenantId' in request.resource.data) ||
         request.resource.data.tenantId == null ||
@@ -269,12 +202,6 @@ service cloud.firestore {
       allow delete: if isSuperAdmin();
     }
 
-    match /tenant_user_invites/{inviteCode} {
-      allow read: if isSuperAdmin() || inviteReadableByUser(inviteCode);
-      allow create, delete: if isSuperAdmin();
-      allow update: if isSuperAdmin() || canClaimInvite(inviteCode);
-    }
-
     match /user_tenant/{userId} {
       allow read: if isSuperAdmin() || (isSignedIn() && userId == uid());
       allow create: if isSuperAdmin() ||
@@ -284,18 +211,6 @@ service cloud.firestore {
           request.resource.data.tenantId == uid() &&
           request.resource.data.displayName is string &&
           request.resource.data.createdAt is timestamp) ||
-        (isSignedIn() &&
-          userId == uid() &&
-          !exists(/databases/$(database)/documents/user_tenant/$(userId)) &&
-          request.resource.data.tenantId is string &&
-          request.resource.data.displayName is string &&
-          hasOnboardingInviteCodeInRequest() &&
-          request.resource.data.displayName ==
-            inviteAfter(request.resource.data.onboardingInviteCode).displayName &&
-          inviteClaimMatchesRequest(
-            request.resource.data.onboardingInviteCode,
-            request.resource.data.tenantId
-          )) ||
         canCreateSelfTenantLinkFromExistingMembership(userId);
       allow update: if isSuperAdmin() ||
         (isSignedIn() &&
@@ -337,8 +252,7 @@ service cloud.firestore {
           (isSignedIn() && userId == uid());
         allow create, update, delete: if isSuperAdmin() ||
           (isSelfWorkspaceOwner(tenantId) && userId == uid()) ||
-          (tenantIsActive(tenantId) && requesterIsTenantAdmin(tenantId)) ||
-          (isSignedIn() && userId == uid() && inviteClaimMatchesTenantUserRequest(tenantId));
+          (tenantIsActive(tenantId) && requesterIsTenantAdmin(tenantId));
       }
 
       match /recipes/{recipeId} {

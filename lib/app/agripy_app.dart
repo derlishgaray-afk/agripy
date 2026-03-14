@@ -43,7 +43,9 @@ class _AgripyAppState extends State<AgripyApp> {
   }
 
   void _syncThemeForCurrentUser() {
-    final uid = _sessionController.currentUser?.uid;
+    final uid =
+        _sessionController.currentUser?.uid ??
+        FirebaseAuth.instance.currentUser?.uid;
     if (_hasSyncedThemeAtLeastOnce && _lastThemeUid == uid) {
       return;
     }
@@ -144,10 +146,7 @@ class _AgripyAppState extends State<AgripyApp> {
           darkTheme: _darkTheme,
           themeMode: _themeController.themeMode,
           locale: const Locale('es', 'PY'),
-          supportedLocales: const [
-            Locale('es'),
-            Locale('es', 'PY'),
-          ],
+          supportedLocales: const [Locale('es'), Locale('es', 'PY')],
           localizationsDelegates: const [
             GlobalMaterialLocalizations.delegate,
             GlobalWidgetsLocalizations.delegate,

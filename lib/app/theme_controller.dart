@@ -3,7 +3,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 class AppThemeController extends ChangeNotifier {
   static const String _prefsKeyPrefix = 'app_theme_mode_user_';
-  static const String _prefsGuestKey = 'app_theme_mode_guest';
 
   ThemeMode _themeMode = ThemeMode.light;
   String? _activeUid;
@@ -18,8 +17,12 @@ class AppThemeController extends ChangeNotifier {
     }
     _activeUid = normalizedUid;
     _hasSyncedActiveUid = true;
+    final requestedUid = normalizedUid;
 
-    final resolvedMode = await _resolveModeForActiveUser();
+    final resolvedMode = await _resolveModeForUser(requestedUid);
+    if (_activeUid != requestedUid) {
+      return;
+    }
     if (_themeMode == resolvedMode) {
       return;
     }
@@ -35,20 +38,18 @@ class AppThemeController extends ChangeNotifier {
 
     final prefs = await SharedPreferences.getInstance();
     final activeUid = _activeUid;
-    if (activeUid != null && activeUid.isNotEmpty) {
-      await prefs.setString(_keyForUid(activeUid), _serializeMode(mode));
+    if (activeUid == null || activeUid.isEmpty) {
       return;
     }
-    await prefs.setString(_prefsGuestKey, _serializeMode(mode));
+    await prefs.setString(_keyForUid(activeUid), _serializeMode(mode));
   }
 
-  Future<ThemeMode> _resolveModeForActiveUser() async {
-    final prefs = await SharedPreferences.getInstance();
-    final activeUid = _activeUid;
-    if (activeUid == null || activeUid.isEmpty) {
-      return _parseMode(prefs.getString(_prefsGuestKey));
+  Future<ThemeMode> _resolveModeForUser(String? uid) async {
+    if (uid == null || uid.isEmpty) {
+      return ThemeMode.light;
     }
-    final userMode = prefs.getString(_keyForUid(activeUid));
+    final prefs = await SharedPreferences.getInstance();
+    final userMode = prefs.getString(_keyForUid(uid));
     return _parseMode(userMode);
   }
 
